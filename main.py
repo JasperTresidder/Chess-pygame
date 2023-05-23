@@ -1,14 +1,14 @@
+# games are saved as .pgn files in the data/games folder
+
 from pprint import pprint
 from src.functions.fen import parse_FEN, FEN_to_board
-from src.board.board import Board
+from src.board.board import Engine
 
+# SET FALSE FOR PLAYER VS PLAYER !!
+PLAYING_AGAINST_AI = True
 
-# Press the green button in the gutter to run the script.
 if __name__ == '__main__':
-    board = Board(True) # SET FALSE FOR PLAYER VS PLAYER !!
-
+    board = Engine(PLAYING_AGAINST_AI)
     while(1):
         board.run()
 
-
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/

@@ -1,0 +1,12 @@
+[Event "Player Vs Computer"]
+[Site "UK"]
+[Date "2023/5/23"]
+[Round "?"]
+[White "Jasper"]
+[Black "Computer"]
+[Result "*"]
+[BlackElo "1"]
+[WhiteElo "3000"]
+
+1. e4 c5 2. d3 d6 3. c4 a6 4. d4 cxd4 5. Qxd4 f5 6. e5 Qa5+ 7. Bd2 dxe5 8. Bxa5 exd4 9. Nf3 Nf6 10. Nxd4 Bd7 11. Bc3 e5 12. Nf3 Be6 13. Nxe5 Nfd7 14. Na3 Be7 15. Nc2 Nc6 16. Nxd7 h6 17. Ne5 Nxe5 18. Bxe5 O-O-O 19. b3 Bg5 20. Be2 Bd2+ 21. Kd1 Bc3+ 22. Kc1 Bxe5 23. Rb1 b6 24. Re1 Kc7 25. Bf3 Kd6 26. Nb4 a5 27. Nd3 Bxh2 28. Bd5 Rhe8 29. Bxe6 g6 30. Bd5 Rxe1+ 31. Kd2 Rxb1 32. g3 Bxg3 33. fxg3 Ke7 34. Ne5 Rd6 35. Kc2 Kf6 36. Kxb1 h5 37. Kc2 Rxd5 38. cxd5 Kxe5 39. Kc3 f4 40. Kc4 f3 41. Kd3 b5 42. Ke3 Kxd5 43. Kxf3 b4 44. Kf4 Kd4 45. Kg5 Ke3 46. Kh4 Kf3 47. Kg5 Kxg3 48. Kxg6 Kg4 49. Kh6 h4 50. Kg6 Kf3 51. Kg5 h3 52. Kh4 Ke4 53. Kxh3 Kd4 54. Kg2 Kc3 55. Kf2 Kd2 56. Kf3 Kc2 57. Ke4 Kb2 58. Kd5 Ka3 59. Kc5 Kxa2 60. Kb5 Kxb3 61. Kxa5 Kc4 62. Ka4 Kc3 63. Kb5 b3 64. Ka4 Kc2 65. Ka3 Kc3 66. Ka4 Kc2 67. Ka3 b2 68. Ka2 b1=Q+ 69. Ka3 Qb3# *
+

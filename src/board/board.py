@@ -29,7 +29,7 @@ def print_eval(eval):
             print('Mate in ', eval["value"])
 
 
-class Board:
+class Engine:
     def __init__(self, mode: bool):
         '''
         :param mode: True = Player vs Computer, False = Player vs Player
@@ -487,38 +487,11 @@ class Board:
                     except:
                         pass
 
-            # todo REDUCE MOVE BY 1!! in ML then load game
-            # todo ARROWS!!
             self.last_move.pop()
-            self.game = chess.pgn.Game()
-            self.game.headers["Event"] = "Player Vs Computer"
-            self.game.headers["Site"] = "UK"
-            self.game.headers["Date"] = str(datetime.datetime.now().year) + '/' + str(
-                datetime.datetime.now().month) + '/' + str(datetime.datetime.now().day)
-            self.game.headers["White"] = "Jasper"
-            self.game.headers["WhiteElo"] = "3000"
-            self.game.headers["Black"] = "Computer"
-            self.game.headers["BlackElo"] = "1"
-            self.node = self.game
-            for move in self.last_move:
-                self.node = self.node.add_variation(chess.Move.from_uci(move))
+            self.node = self.node.parent # allows for undoes to show in analysis on https://chess.com/analysis
+
             self.update_board()
             self.update_legal_moves()
-        # print('Number of legal moves', self.count_legal_moves())
-
-        # self.board = self.prev_board
-        # for i, row in enumerate(self.board):
-        #     for j, piece in enumerate(row):
-        #         if piece != ' ':
-        #             if piece.position != (i, j):
-        #                 piece.position = (i, j)
-        # pprint(self.board, indent=1)
-        # if self.turn == 'w':
-        #     self.turn = 'b'
-        # else:
-        #     self.turn = 'w'
-        # self.update_board()
-        # self.update_legal_moves()
 
     # @timeit
     def update_legal_moves(self):
