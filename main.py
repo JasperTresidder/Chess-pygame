@@ -2,7 +2,7 @@
 
 from pprint import pprint
 from src.functions.fen import parse_FEN, FEN_to_board
-from src.board.board import Engine
+from src.board.engine import Engine
 
 # SET FALSE FOR PLAYER VS PLAYER !!
 PLAYING_AGAINST_AI = True
