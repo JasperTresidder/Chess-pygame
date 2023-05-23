@@ -1,9 +1,6 @@
 import datetime
-import io
-import numpy as np
 import random
 import sys
-from pprint import pprint
 from src.functions.fen import *
 import pygame as pg
 from src.functions.timer import *
@@ -16,7 +13,6 @@ import chess.pgn
 # "rnb2k1r/pp1Pbppp/2p5/q7/2B5/8/PPPQNnPP/RNB1K2R w KQ - 3 9" - 39 moves can promote to other pieces
 # rnbq1bnr/ppp1p1pp/3p4/6P1/1k1PPp1P/1PP2P1B/PB6/RN1QK2R b KQkq - 0 13 - king cant go to a4 here
 
-# todo: add in arrow support on right click
 # todo: add stockfish bots + evaluation
 
 def print_eval(eval):
@@ -661,7 +657,6 @@ class Engine:
     def draw_board(self):
         self.screen.blit(self.background, (0, 0))
         self.screen.blit(self.board_background, (self.offset[0], self.offset[1]))
-
         if len(self.last_move) > 1:
             square1 = square_on(self.last_move[-1][0:2])
             square2 = square_on(self.last_move[-1][2:4])
