@@ -8,7 +8,7 @@ from src.board.board import Engine
 PLAYING_AGAINST_AI = True
 
 if __name__ == '__main__':
-    board = Engine(PLAYING_AGAINST_AI)
+    engine = Engine(PLAYING_AGAINST_AI)
     while(1):
-        board.run()
+        engine.run()
 
