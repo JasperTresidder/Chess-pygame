@@ -11,10 +11,10 @@ class King(Piece):
         self.position = position
         if colour == 'black':
             self.piece = 'k'
-            self.picture = pg.image.load("C:/Users/jaspe/PycharmProjects/Chess/data/img/black_k.png").convert_alpha()
+            self.picture = pg.image.load("data/img/black_k.png").convert_alpha()
         else:
             self.piece = 'K'
-            self.picture = pg.image.load("C:/Users/jaspe/PycharmProjects/Chess/data/img/white_k.png").convert_alpha()
+            self.picture = pg.image.load("data/img/white_k.png").convert_alpha()
 
     def update_legal_moves(self, board, eps, captures):
         self.legal_positions = []

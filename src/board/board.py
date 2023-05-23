@@ -41,7 +41,7 @@ class Board:
         self.last_move = []
         self.highlighted = []
         self.arrows = []
-        self.stockfish = Stockfish(r"C:\Users\jaspe\PycharmProjects\Chess\lit\stockfish_15.1_win_x64_avx2\stockfish-windows-2022-x86-64-avx2.exe",
+        self.stockfish = Stockfish("lit/stockfish_15.1_win_x64_avx2/stockfish-windows-2022-x86-64-avx2.exe",
             depth = 3,
             parameters={"Threads": 1, "Minimum Thinking Time": 1, "Hash": 32,
                         "Skill Level": 0.001,
@@ -90,9 +90,9 @@ class Board:
         self.txr = None
         self.tyr = None
         self.left = False
-        self.background = pg.image.load('C:/Users/jaspe/PycharmProjects/Chess/data/img/background_dark.png').convert()
+        self.background = pg.image.load('data/img/background_dark.png').convert()
         self.background = pg.transform.scale(self.background, (pg.display.get_window_size()[0], pg.display.get_window_size()[1]))
-        self.board_background = pg.image.load('C:/Users/jaspe/PycharmProjects/Chess/data/img/marble.png').convert()
+        self.board_background = pg.image.load('data/img/marble.png').convert()
         self.board_background = pg.transform.scale(self.board_background,
                                              (self.size*8, self.size*8))
         self.offset = [pg.display.get_window_size()[0] / 2 - 4 * self.size,
@@ -373,13 +373,13 @@ class Board:
                                 promote = True
 
                         if castle or promote:
-                            pg.mixer.music.load('C:/Users/jaspe/PycharmProjects/Chess/data/sounds/castle.mp3')
+                            pg.mixer.music.load('data/sounds/castle.mp3')
                             pg.mixer.music.play(1)
                         elif piece_sound == ' ' and not eps_moved_made:
-                            pg.mixer.music.load('C:/Users/jaspe/PycharmProjects/Chess/data/sounds/move.mp3')
+                            pg.mixer.music.load('data/sounds/move.mp3')
                             pg.mixer.music.play(1)
                         else:
-                            pg.mixer.music.load('C:/Users/jaspe/PycharmProjects/Chess/data/sounds/capture.mp3')
+                            pg.mixer.music.load('data/sounds/capture.mp3')
                             pg.mixer.music.play(1)
 
 
@@ -396,7 +396,7 @@ class Board:
 
         # update next players legal moves
         if self.update_legal_moves():
-            pg.mixer.music.load('C:/Users/jaspe/PycharmProjects/Chess/data/sounds/check.aiff')
+            pg.mixer.music.load('data/sounds/check.aiff')
             pg.mixer.music.play(1)
 
         legal_moves = self.count_legal_moves()
@@ -405,7 +405,7 @@ class Board:
         self.game_fens.append(create_FEN(self.board, self.turn, self.castle_rights, self.en_passant_square, self.fullmove_number))
         # print(self.game_fens[-1])
         if legal_moves == 0 or self.stockfish.get_top_moves(1) == []:
-            pg.mixer.music.load('C:/Users/jaspe/PycharmProjects/Chess/data/sounds/mate.wav')
+            pg.mixer.music.load('data/sounds/mate.wav')
             pg.mixer.music.play(1)
             time.sleep(0.15)
             pg.mixer.music.play(1)

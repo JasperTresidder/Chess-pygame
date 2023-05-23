@@ -10,10 +10,10 @@ class Queen(Piece):
 
         if colour == 'black':
             self.piece = 'q'
-            self.picture = pg.image.load("C:/Users/jaspe/PycharmProjects/Chess/data/img/black_q.png").convert_alpha()
+            self.picture = pg.image.load("data/img/black_q.png").convert_alpha()
         else:
             self.piece = 'Q'
-            self.picture = pg.image.load("C:/Users/jaspe/PycharmProjects/Chess/data/img/white_q.png").convert_alpha()
+            self.picture = pg.image.load("data/img/white_q.png").convert_alpha()
 
     def update_legal_moves(self, board, eps, captures):
         self.legal_positions = []

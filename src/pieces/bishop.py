@@ -9,10 +9,10 @@ class Bishop(Piece):
         self.position = position
         if colour == 'black':
             self.piece = 'b'
-            self.picture = pg.image.load("C:/Users/jaspe/PycharmProjects/Chess/data/img/black_b.png").convert_alpha()
+            self.picture = pg.image.load("data/img/black_b.png").convert_alpha()
         else:
             self.piece = 'B'
-            self.picture = pg.image.load("C:/Users/jaspe/PycharmProjects/Chess/data/img/white_b.png").convert_alpha()
+            self.picture = pg.image.load("data/img/white_b.png").convert_alpha()
 
     def update_legal_moves(self, board, eps, captures):
         self.legal_positions = []
