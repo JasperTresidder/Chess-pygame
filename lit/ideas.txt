@@ -1,0 +1,32 @@
+
+
+algo
+
+typedef unsigned long long u64;
+
+def Perft(int depth):
+  move_list = []
+  int n_moves, i = 0
+  nodes = 0;
+
+  if depth == 0:
+    return NONE
+
+  self.update_legal_moves()
+  n_moves = GenerateLegalMoves(move_list);
+
+  if self.turn == 'w':
+    for piece in self.white_pieces:
+        for move in piece.legal_positions:
+            make_move(move, piece)
+            nodes += Perft(depth -1)
+            undo_move()
+  return nodes
+
+  for (i = 0; i < n_moves; i++) {
+    MakeMove(move_list[i]);
+    nodes += Perft(depth - 1);
+    UndoMove(move_list[i]);
+  }
+  return nodes;
+}

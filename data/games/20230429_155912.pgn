@@ -1,0 +1,10 @@
+[Event "Player Vs Computer"]
+[Site "UK"]
+[Date "2023/4/29"]
+[Round "?"]
+[White "Jasper"]
+[Black "Computer"]
+[Result "*"]
+
+1. Nf3 c6 2. e4 d5 3. d3 Qc7 4. Nc3 Nf6 5. d4 dxe4 6. Qe2 Be6 7. Qxe4 Nxe4 8. Nxe4 h5 9. Nf6+ Kd8 10. Ne5 gxf6 11. Nxf7+ Kd7 12. Nxh8 b6 13. Ng6 Qd8 14. Nxf8+ Ke8 15. Nxe6 Qd5 16. c3 Qe4+ 17. Be3 Qxe6 18. Be2 Qf5 19. O-O Kd8 20. Rfe1 Qc2 21. Rab1 Qh7 22. Bf3 Qf5 23. Bxc6 Nd7 24. Bxa8 Ne5 25. Bf3 Nxf3+ 26. gxf3 h4 27. Kf1 b5 28. Ke2 Ke8 29. Kd1 Qxb1+ 30. Kd2 Qf5 31. f4 Qh5 32. d5 Qxd5+ 33. Bd4 b4 34. f3 Qd6 35. a3 bxa3 36. bxa3 Qd5 37. c4 Qd6 38. Kc3 a5 39. Rd1 Qxa3+ 40. Kd2 Qb4+ 41. Kd3 a4 42. Re1 Qxe1 43. Kc2 e5 44. Kb2 Qd1 45. Bc5 Qf1 46. Ba3 Kd8 47. Kc3 Qe2 48. Kb4 Qe1+ 49. Kxa4 Qe3 50. Kb5 Ke8 51. c5 Qd2 52. c6 Qc3 53. Kb6 Qxf3 54. Kb7 Qb3+ 55. Kc7 e4 56. Kd6 Qd3+ 57. Kc7 Qxa3 58. Kb7 e3 59. c7 Qc3 60. c8=Q+ Ke7 61. Qxc3 e2 62. Qe1 h3 63. Qxe2+ Kd6 64. Qf3 Kd7 65. Qxh3+ Ke7 66. Qh6 Kf7 67. Qh5+ Ke7 68. Qf5 Kd6 69. Qxf6+ Kc5 70. Qe6 Kb4 71. f5 Ka4 72. f6 Ka5 73. f7 Kb4 74. f8=Q+ Ka5 75. Qff5+ Kb4 76. Qee4+ Ka3 77. Qff3+ Kb2 78. Qee2+ Ka1 79. Qff1# *
+

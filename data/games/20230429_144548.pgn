@@ -1,0 +1,10 @@
+[Event "Player Vs Computer"]
+[Site "UK"]
+[Date "2023/4/29"]
+[Round "?"]
+[White "Jasper"]
+[Black "Computer"]
+[Result "*"]
+
+1. e3 c6 2. e4 h6 3. e5 a5 4. e6 d6 5. exf7+ Kd7 6. fxg8=Q e5 7. Qxf8 g6 8. Qf7+ Qe7 9. Qxe7+ Kxe7 10. Qg4 Kf6 11. Bd3 Re8 12. Qxg6+ Ke7 13. Be2 Rd8 14. d3 Rf8 15. Bg5+ Kd7 16. Bxh6 Rd8 17. Qg7+ Ke8 18. Bh5# *
+

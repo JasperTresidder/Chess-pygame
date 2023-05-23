@@ -1,0 +1,12 @@
+[Event "Player Vs Computer"]
+[Site "UK"]
+[Date "2023/5/3"]
+[Round "?"]
+[White "Jasper"]
+[Black "Computer"]
+[Result "*"]
+[BlackElo "1"]
+[WhiteElo "3000"]
+
+1. b4 h6 2. b5 Rh7 3. b6 Rh8 4. bxc7 Rh7 5. cxb8=Q Rh8 6. Qxa8 Rh7 7. Qxc8 Rh8 8. Bb2 Rh7 9. Bc3 Rh8 10. Ba5 Rh7 11. Qxd8# *
+

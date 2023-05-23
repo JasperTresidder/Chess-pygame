@@ -1,0 +1,12 @@
+[Event "Player Vs Computer"]
+[Site "UK"]
+[Date "2023/4/29"]
+[Round "?"]
+[White "Jasper"]
+[Black "Computer"]
+[Result "*"]
+[BlackElo "1"]
+[WhiteElo "3000"]
+
+1. Nf3 a6 2. b3 d5 3. Bb2 Bf5 4. d3 h6 5. e4 Bg4 6. h3 dxe4 7. hxg4 Nf6 8. Bxf6 exf3 9. Qxf3 Nc6 10. Bb2 Qd6 11. Be2 Nd4 12. Bxd4 Qxd4 13. Qxb7 Ra7 14. Qc8+ Qd8 15. Qxd8+ Kxd8 16. O-O g6 17. Rd1 Ra8 18. c4 e6 19. Nc3 Ke7 20. f3 Rd8 21. d4 Rxd4 22. Rxd4 Bg7 23. Rd3 f5 24. Na4 Bxa1 25. Nc5 a5 26. Rd7+ Kf6 27. g5+ hxg5 28. Nb7 Bb2 29. Nxa5 e5 30. Rxc7 g4 31. Rc6+ Kg5 32. b4 e4 33. fxe4 Be5 34. exf5 g3 35. fxg6 Bf6 36. b5 Bc3 37. Nb3 Re8 38. Nc1 Bd2 39. b6 Re5 40. b7 Be3+ 41. Kf1 Kh6 42. b8=Q Re6 43. Qh8+ Kxg6 44. Rxe6+ Kf7 45. Qf6+ Kg8 46. Re8+ Kh7 47. Re7+ Kg8 48. Qg7# *
+
