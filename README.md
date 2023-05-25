@@ -1,8 +1,9 @@
 <h3>This is a pygame implementation of chess. Following all rules, playing against stockfish AI or PvP.
 First upload. Needs refinement. </h3>
 
-<h5>Requires Python >=3.10</h5>
-<h5>Size: 166Mb</h5>
+<h5>Requires Python >=3.10 <br>
+Size: 166Mb</h5>
+
 ### Tips:
 - Click middle mouse button or press 'u' to <b>undo</b> move 
 - Crtl + F to print the FEN position
