@@ -9,27 +9,26 @@ from stockfish import Stockfish
 import chess
 import chess.pgn
 
+
 # "8/8/8/2k5/2pP4/8/B7/4K3 b - d3 0 3" - can en passant out of check!
 # "rnb2k1r/pp1Pbppp/2p5/q7/2B5/8/PPPQNnPP/RNB1K2R w KQ - 3 9" - 39 moves can promote to other pieces
 # rnbq1bnr/ppp1p1pp/3p4/6P1/1k1PPp1P/1PP2P1B/PB6/RN1QK2R b KQkq - 0 13 - king cant go to a4 here
 
 # todo: add stockfish bots + evaluation
 
-def print_eval(eval):
-    if eval["type"] == "cp":
-        print('Evaluation = ', eval["value"])
+
+def print_eval(evaluation):
+    if evaluation["type"] == "cp":
+        print('Evaluation = ', evaluation["value"])
     else:
-        if eval["value"] < 0:
-            print('Mate in ', -eval["value"])
+        if evaluation["value"] < 0:
+            print('Mate in ', -evaluation["value"])
         else:
-            print('Mate in ', eval["value"])
+            print('Mate in ', evaluation["value"])
 
 
 class Engine:
     def __init__(self, mode: bool):
-        '''
-        :param mode: True = Player vs Computer, False = Player vs Player
-        '''
         self.play_ai = mode
         self.game_just_ended = False
         pg.init()
@@ -38,11 +37,11 @@ class Engine:
         self.highlighted = []
         self.arrows = []
         self.stockfish = Stockfish("lit/stockfish_15.1_win_x64_avx2/stockfish-windows-2022-x86-64-avx2.exe",
-            depth = 3,
-            parameters={"Threads": 1, "Minimum Thinking Time": 1, "Hash": 32,
-                        "Skill Level": 0.001,
-                        "UCI_LimitStrength": "true",
-                        "UCI_Elo": 0})
+                                   depth=3,
+                                   parameters={"Threads": 1, "Minimum Thinking Time": 1, "Hash": 32,
+                                               "Skill Level": 0.001,
+                                               "UCI_LimitStrength": "true",
+                                               "UCI_Elo": 0})
         self.stockfish.set_fen_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
         self.game = chess.pgn.Game()
         self.game.headers["Event"] = "Player Vs Computer"
@@ -51,7 +50,8 @@ class Engine:
         self.game.headers["WhiteElo"] = "3000"
         self.game.headers["Black"] = "Computer"
         self.game.headers["BlackElo"] = "1"
-        self.game.headers["Date"] = str(datetime.datetime.now().year) + '/' + str(datetime.datetime.now().month) + '/' + str(datetime.datetime.now().day)
+        self.game.headers["Date"] = str(datetime.datetime.now().year) + '/' + str(
+            datetime.datetime.now().month) + '/' + str(datetime.datetime.now().day)
 
         self.screen = pg.display.set_mode((980, 980), vsync=1)
         # "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
@@ -77,7 +77,7 @@ class Engine:
         self.updates = False
         self.arrow_colour = (252, 177, 3)
         self.colours = [(118, 150, 86), (238, 238, 210)]
-        # self.colours = [(50, 50, 50), (255, 255, 255)]
+        # self.colours = [(50, 50, 50), (255, 255, 255)] 
         self.colours2 = [(150, 86, 86), (238, 215, 210)]
         self.colours3 = [(186, 202, 68), (255, 251, 171)]
         self.colours4 = [(252, 111, 76), (252, 137, 109)]
@@ -87,10 +87,11 @@ class Engine:
         self.tyr = None
         self.left = False
         self.background = pg.image.load('data/img/background_dark.png').convert()
-        self.background = pg.transform.scale(self.background, (pg.display.get_window_size()[0], pg.display.get_window_size()[1]))
+        self.background = pg.transform.scale(self.background,
+                                             (pg.display.get_window_size()[0], pg.display.get_window_size()[1]))
         self.board_background = pg.image.load('data/img/marble.png').convert()
         self.board_background = pg.transform.scale(self.board_background,
-                                             (self.size*8, self.size*8))
+                                                   (self.size * 8, self.size * 8))
         self.offset = [pg.display.get_window_size()[0] / 2 - 4 * self.size,
                        pg.display.get_window_size()[1] / 2 - 4 * self.size]
         self.update_board()
@@ -227,63 +228,63 @@ class Engine:
                 print_eval(self.stockfish.get_evaluation())
 
     def move_strength(self, moves):
-        #return moves[0]["Move"]
+        # return moves[0]["Move"]
         a = random.randint(1, 5)
         move = self.stockfish.get_best_move_time(a)
         return move
-        random_number = random.random()
-        if random_number < 0.3:
-            return moves[0]["Move"]
-        elif random_number < 0.6:
-            try:
-                return moves[1]["Move"]
-            except:
-                try:
-                    return moves[0]["Move"]
-                except:
-                    return None
-        elif random_number < 0.9:
-            try:
-                return moves[2]["Move"]
-            except:
-                try:
-                    return moves[1]["Move"]
-                except:
-                    try:
-                        return moves[0]["Move"]
-                    except:
-                        return None
-        elif random_number < 0.95:
-            try:
-                return moves[3]["Move"]
-            except:
-                try:
-                    return moves[2]["Move"]
-                except:
-                    try:
-                        return moves[1]["Move"]
-                    except:
-                        try:
-                            return moves[0]["Move"]
-                        except:
-                            return None
-        else:
-            try:
-                return moves[4]["Move"]
-            except:
-                try:
-                    return moves[3]["Move"]
-                except:
-                    try:
-                        return moves[2]["Move"]
-                    except:
-                        try:
-                            return moves[1]["Move"]
-                        except:
-                            try:
-                                return moves[0]["Move"]
-                            except:
-                                return None
+        # random_number = random.random()
+        # if random_number < 0.3:
+        #     return moves[0]["Move"]
+        # elif random_number < 0.6:
+        #     try:
+        #         return moves[1]["Move"]
+        #     except:
+        #         try:
+        #             return moves[0]["Move"]
+        #         except:
+        #             return None
+        # elif random_number < 0.9:
+        #     try:
+        #         return moves[2]["Move"]
+        #     except:
+        #         try:
+        #             return moves[1]["Move"]
+        #         except:
+        #             try:
+        #                 return moves[0]["Move"]
+        #             except:
+        #                 return None
+        # elif random_number < 0.95:
+        #     try:
+        #         return moves[3]["Move"]
+        #     except:
+        #         try:
+        #             return moves[2]["Move"]
+        #         except:
+        #             try:
+        #                 return moves[1]["Move"]
+        #             except:
+        #                 try:
+        #                     return moves[0]["Move"]
+        #                 except:
+        #                     return None
+        # else:
+        #     try:
+        #         return moves[4]["Move"]
+        #     except:
+        #         try:
+        #             return moves[3]["Move"]
+        #         except:
+        #             try:
+        #                 return moves[2]["Move"]
+        #             except:
+        #                 try:
+        #                     return moves[1]["Move"]
+        #                 except:
+        #                     try:
+        #                         return moves[0]["Move"]
+        #                     except:
+        #                         return None
 
     def un_click_right(self, right_click):
         txr = int((pg.mouse.get_pos()[0] - self.offset[0]) // self.size)
@@ -324,24 +325,25 @@ class Engine:
                         self.board[i][j] = ' '
 
                         # has a pawn moved 2 squares. en-passant check
-                        if piece.piece.lower() == 'p' and piece.position[0] - i == 2*piece.direction:
-                            self.en_passant_square = str((piece.position[0] + int((piece.position[0] - i)/2), piece.position[1]))
+                        if piece.piece.lower() == 'p' and piece.position[0] - i == 2 * piece.direction:
+                            self.en_passant_square = str(
+                                (piece.position[0] + int((piece.position[0] - i) / 2), piece.position[1]))
                         else:
                             self.en_passant_square = '-'
 
                         # has a pawn been captured with enpassant
                         if piece.piece.lower() == 'p':
-                            if piece.position[0] - i == piece.direction and (piece.position[1] - j == 1 or piece.position[1] - j == -1):
+                            if piece.position[0] - i == piece.direction and (
+                                    piece.position[1] - j == 1 or piece.position[1] - j == -1):
                                 if self.board[piece.position[0]][piece.position[1]] == ' ':
                                     eps_moved_made = True
                                     self.board[piece.position[0] - piece.direction][piece.position[1]].dead = True
                                     self.board[piece.position[0] - piece.direction][piece.position[1]] = ' '
 
-
                         # king has castled
                         castle = False
                         if piece.piece.lower() == 'k':
-                            if piece.position[1] - j == 2 or piece.position[1] -j == -2:
+                            if piece.position[1] - j == 2 or piece.position[1] - j == -2:
                                 castle = True
                                 if piece.position[1] < 4:
                                     self.board[piece.position[0]][3] = self.board[piece.position[0]][0]
@@ -351,8 +353,6 @@ class Engine:
                                     self.board[piece.position[0]][5] = self.board[piece.position[0]][7]
                                     self.board[piece.position[0]][7] = ' '
                                     self.board[piece.position[0]][5].position = (piece.position[0], 5)
-
-
 
                         piece_sound = self.board[piece.position[0]][piece.position[1]]
 
@@ -378,7 +378,6 @@ class Engine:
                             pg.mixer.music.load('data/sounds/capture.mp3')
                             pg.mixer.music.play(1)
 
-
                         break
         for p in self.all_pieces:
             if p.dead:
@@ -398,7 +397,8 @@ class Engine:
         legal_moves = self.count_legal_moves()
         # print('Number of legal moves', legal_moves)
         # print FEN notation of position
-        self.game_fens.append(create_FEN(self.board, self.turn, self.castle_rights, self.en_passant_square, self.fullmove_number))
+        self.game_fens.append(
+            create_FEN(self.board, self.turn, self.castle_rights, self.en_passant_square, self.fullmove_number))
         # print(self.game_fens[-1])
         if legal_moves == 0 or self.stockfish.get_top_moves(1) == []:
             pg.mixer.music.load('data/sounds/mate.wav')
@@ -422,7 +422,7 @@ class Engine:
     def reset_game(self):
         self.updates_kill()
         self.board, self.turn, self.castle_rights, self.en_passant_square, self.halfmoves_since_last_capture, self.fullmove_number = parse_FEN(
-                self.game_fens[0])
+            self.game_fens[0])
         self.game_fens = [self.game_fens[0]]
         for p in self.all_pieces:
             self.all_pieces.remove(p)
@@ -464,7 +464,7 @@ class Engine:
             else:
                 self.game_fens.pop()
                 self.board, self.turn, self.castle_rights, self.en_passant_square, self.halfmoves_since_last_capture, self.fullmove_number = parse_FEN(
-                self.game_fens[-1])
+                    self.game_fens[-1])
             for p in self.all_pieces:
                 self.all_pieces.remove(p)
             for p in self.black_pieces:
@@ -484,7 +484,7 @@ class Engine:
                         pass
 
             self.last_move.pop()
-            self.node = self.node.parent # allows for undoes to show in analysis on https://chess.com/analysis
+            self.node = self.node.parent  # allows for undoes to show in analysis on https://chess.com/analysis
 
             self.update_board()
             self.update_legal_moves()
@@ -513,7 +513,6 @@ class Engine:
         else:
             self.map = self.create_map(self.white_pieces)
 
-
         # if in_check:
         if self.turn == 'w':
             for piece in self.white_pieces:
@@ -521,7 +520,6 @@ class Engine:
         else:
             for piece in self.black_pieces:
                 piece.trim_checks(self.board, self.turn, self.map, in_check)
-
 
         if self.turn == 'w':
             for piece in self.black_pieces:
@@ -534,7 +532,9 @@ class Engine:
         return in_check
 
     def make_move_board(self, move, piece):
-        if self.board[piece.position[0]][piece.position[1]].make_move(self.board, self.offset, self.turn, piece.position[1]+move[0], piece.position[0]+move[1]):
+        if self.board[piece.position[0]][piece.position[1]].make_move(self.board, self.offset, self.turn,
+                                                                      piece.position[1] + move[0],
+                                                                      piece.position[0] + move[1]):
             if self.turn == 'w':
                 self.turn = 'b'
             else:
@@ -549,7 +549,8 @@ class Engine:
             square2 = square_on(move[2:4])
             the_move = (square2[0] - square1[0], square2[1] - square1[1])
             piece = self.board[square1[0]][square1[1]]
-            if piece.make_move(self.board, self.offset, self.turn, piece.position[1] + the_move[1], piece.position[0] + the_move[0]):
+            if piece.make_move(self.board, self.offset, self.turn, piece.position[1] + the_move[1],
+                               piece.position[0] + the_move[0]):
                 if self.turn == 'w':
                     self.turn = 'b'
                 else:
@@ -579,7 +580,8 @@ class Engine:
 
     def promotion(self, piece):
         self.all_pieces.remove(piece)
-        self.board[piece.position[0]][piece.position[1]] = Queen(position=(piece.position[0], piece.position[1]), colour=piece.colour)
+        self.board[piece.position[0]][piece.position[1]] = Queen(position=(piece.position[0], piece.position[1]),
+                                                                 colour=piece.colour)
         self.all_pieces.add(self.board[piece.position[0]][piece.position[1]])
         if piece.colour == 'black':
             self.black_pieces.remove(piece)
@@ -647,7 +649,7 @@ class Engine:
         self.ty = int((pg.mouse.get_pos()[1] - self.offset[1]) // self.size)
         self.updates = True
 
-    def update_board(self): # is currently clicking a piece?
+    def update_board(self):  # is currently clicking a piece?
         try:
             if self.board[self.ty][self.tx] != ' ':
                 self.board[self.ty][self.tx].update(self.screen, self.offset, self.turn)
@@ -657,6 +659,8 @@ class Engine:
     def draw_board(self):
         self.screen.blit(self.background, (0, 0))
         self.screen.blit(self.board_background, (self.offset[0], self.offset[1]))
+        square1 = None
+        square2 = None
         if len(self.last_move) > 1:
             square1 = square_on(self.last_move[-1][0:2])
             square2 = square_on(self.last_move[-1][2:4])
@@ -696,11 +700,13 @@ class Engine:
         for i in range(8):
             letter = 8 - i
             surface = self.font.render(str(letter), False, (255, 255, 255))
-            self.screen.blit(surface, (self.offset[0] - self.size/2, self.offset[1] + self.size/2 + self.size*i -13))        # draw letters + numbers
+            self.screen.blit(surface, (self.offset[0] - self.size / 2,
+                                       self.offset[1] + self.size / 2 + self.size * i - 13))  # draw letters + numbers
         for i in range(8):
             letter = board_letters[i]
             surface = self.font.render(str(letter), False, (255, 255, 255))
-            self.screen.blit(surface, (self.offset[1] + self.size/2 + self.size*i -8, self.offset[0] + 16*self.size/2 + 15))
+            self.screen.blit(surface, (
+                self.offset[1] + self.size / 2 + self.size * i - 8, self.offset[0] + 16 * self.size / 2 + 15))
 
     def draw_pieces(self, piece_selected=None):
         for piece in self.all_pieces:
@@ -714,11 +720,12 @@ class Engine:
         self.draw_arrows()
 
     def draw_arrows(self):
-        off = (self.offset[0] + self.size/2, self.offset[1] + self.size/2)
+        off = (self.offset[0] + self.size / 2, self.offset[1] + self.size / 2)
         for start, end in self.arrows:
             surface = pg.Surface((pg.display.get_window_size()[0], pg.display.get_window_size()[1]), pg.SRCALPHA)
             surface.set_alpha(200)
-            pg.draw.line(surface, self.arrow_colour, (off[0] + self.size * start[1], off[1] + self.size * start[0]), (off[0] + self.size * end[1], off[1] + self.size * end[0]), 10)
+            pg.draw.line(surface, self.arrow_colour, (off[0] + self.size * start[1], off[1] + self.size * start[0]),
+                         (off[0] + self.size * end[1], off[1] + self.size * end[0]), 10)
             self.screen.blit(surface, (0, 0))
 
     def moved2(self):
@@ -731,24 +738,25 @@ class Engine:
                         self.board[i][j] = ' '
 
                         # has a pawn moved 2 squares. en-passant check
-                        if piece.piece.lower() == 'p' and piece.position[0] - i == 2*piece.direction:
-                            self.en_passant_square = str((piece.position[0] + int((piece.position[0] - i)/2), piece.position[1]))
+                        if piece.piece.lower() == 'p' and piece.position[0] - i == 2 * piece.direction:
+                            self.en_passant_square = str(
+                                (piece.position[0] + int((piece.position[0] - i) / 2), piece.position[1]))
                         else:
                             self.en_passant_square = '-'
 
                         # has a pawn been captured with enpassant
                         if piece.piece.lower() == 'p':
-                            if piece.position[0] - i == piece.direction and (piece.position[1] - j == 1 or piece.position[1] - j == -1):
+                            if piece.position[0] - i == piece.direction and (
+                                    piece.position[1] - j == 1 or piece.position[1] - j == -1):
                                 if self.board[piece.position[0]][piece.position[1]] == ' ':
                                     eps_moved_made = True
                                     self.board[piece.position[0] - piece.direction][piece.position[1]].dead = True
                                     self.board[piece.position[0] - piece.direction][piece.position[1]] = ' '
 
-
                         # king has castled
                         castle = False
                         if piece.piece.lower() == 'k':
-                            if piece.position[1] - j == 2 or piece.position[1] -j == -2:
+                            if piece.position[1] - j == 2 or piece.position[1] - j == -2:
                                 castle = True
                                 if piece.position[1] < 4:
                                     self.board[piece.position[0]][3] = self.board[piece.position[0]][0]
@@ -758,8 +766,6 @@ class Engine:
                                     self.board[piece.position[0]][5] = self.board[piece.position[0]][7]
                                     self.board[piece.position[0]][7] = ' '
                                     self.board[piece.position[0]][5].position = (piece.position[0], 5)
-
-
 
                         piece_sound = self.board[piece.position[0]][piece.position[1]]
 
@@ -784,7 +790,5 @@ class Engine:
             if p.dead:
                 self.all_pieces.remove(p)
 
-
-        self.game_fens.append(create_FEN(self.board, self.turn, self.castle_rights, self.en_passant_square, self.fullmove_number))
-
-
+        self.game_fens.append(
+            create_FEN(self.board, self.turn, self.castle_rights, self.en_passant_square, self.fullmove_number))
