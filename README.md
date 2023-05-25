@@ -1,6 +1,8 @@
 <h3>This is a pygame implementation of chess. Following all rules, playing against stockfish AI or PvP.
 First upload. Needs refinement. </h3>
 
+<h5>Requires Python >=3.10</h5>
+
 ### Tips:
 - click middle mouse button to undo move 
 - crtl + f to print the FEN position
