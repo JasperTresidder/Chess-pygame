@@ -4,7 +4,7 @@ First upload. Needs refinement. </h3>
 <h5>Requires Python >=3.10</h5>
 
 ### Tips:
-- click middle mouse button to undo move 
+- click middle mouse button or press 'u' to <b>undo</b> move 
 - crtl + f to print the FEN position
 
 

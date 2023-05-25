@@ -153,6 +153,13 @@ class Engine:
                     self.end_game()
                 if event.key == pg.K_f and pg.key.get_mods() & pg.KMOD_CTRL:
                     print(self.game_fens[-1])
+                if event.key == pg.K_u:
+                    if len(self.game_fens) > 1:
+                        self.undo_move(False)
+                        self.un_click_right(False)
+                    elif len(self.game_fens) == 1:
+                        self.undo_move(True)
+                        self.un_click_right(False)
         self.game_just_ended = False
         pg.display.flip()
 
