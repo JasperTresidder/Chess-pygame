@@ -8,8 +8,8 @@ First upload. Needs refinement. </h3>
 
 ## Setup
 <h4>Clone repo and change directory into the project.</h4>
-<code>git clone https://github.com/JasperTresidder/Chess-pygame.git
-cd Chess-pygame</code>
+<code>git clone https://github.com/JasperTresidder/Chess-pygame.git </code><br>
+<code>cd Chess-pygame</code>
 <h4>Create a virtual environment</h4>
 <code>python3 -m venv env</code>
 <h4>Activate the virtual environment 
@@ -19,8 +19,8 @@ MacOS/Unix:</h4>
 <h4>Windows:</h4>
 <code>.\env\Scripts\activate</code>
 <h4>Install packages from the requirements list into the venv. <br> Then run the program</h4>
-<code>python -m pip install -r requirements.txt
-python main.py</code>
+<code>python -m pip install -r requirements.txt </code><br>
+<code>python main.py</code>
 
 ## Important
 <div class="box">
