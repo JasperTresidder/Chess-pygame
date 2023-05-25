@@ -13,7 +13,7 @@ First upload. Needs refinement. </h3>
 <code>git clone https://github.com/JasperTresidder/Chess-pygame.git </code><br>
 <code>cd Chess-pygame</code>
 <h4>Create a virtual environment</h4>
-<code>python3 -m venv env</code>
+<code>python -m venv env</code>
 <h4>Activate the virtual environment 
 <br><br>
 MacOS/Unix:</h4>
