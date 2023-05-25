@@ -5,7 +5,7 @@
 from src.engine.engine import Engine
 
 # SET FALSE FOR PLAYER VS PLAYER !!
-PLAYING_AGAINST_AI = False
+PLAYING_AGAINST_AI = True
 
 if __name__ == '__main__':
     engine = Engine(PLAYING_AGAINST_AI)
