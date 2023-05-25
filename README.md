@@ -28,7 +28,7 @@ MacOS/Unix:</h4>
 <div class="box">
 - If you are <b>NOT</b> on Windows you will have to <a href="https://stockfishchess.org/download/">install</a> your own version of Stockfish.<br>
 - Place the Stockfish application in the lit/stockfish_15.1_win_x64_avx2/ dictionary<br>
-- Then change the reference to this path in the __init__ of engine.py located in the src dictionary. 
+- Then change the reference to this path in the __init__ of engine.py (line 39) located in the src dictionary. 
 </div>
 
 ![image](https://github.com/JasperTresidder/Chess-pygame/assets/51917264/2665b390-faa4-41a9-aff3-b8b0884b3623)
