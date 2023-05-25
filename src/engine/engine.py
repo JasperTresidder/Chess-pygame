@@ -44,12 +44,16 @@ class Engine:
                                                "UCI_Elo": 0})
         self.stockfish.set_fen_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
         self.game = chess.pgn.Game()
-        self.game.headers["Event"] = "Player Vs Computer"
+        if mode:
+            self.game.headers["Event"] = "Player Vs Computer"
+            self.game.headers["Black"] = "Computer"
+        else:
+            self.game.headers["Event"] = "Player Vs Player"
+            self.game.headers["Black"] = "Player"
         self.game.headers["Site"] = "UK"
-        self.game.headers["White"] = "Jasper"
-        self.game.headers["WhiteElo"] = "3000"
-        self.game.headers["Black"] = "Computer"
-        self.game.headers["BlackElo"] = "1"
+        self.game.headers["White"] = "Player"
+        self.game.headers["WhiteElo"] = "?"
+        self.game.headers["BlackElo"] = "?"
         self.game.headers["Date"] = str(datetime.datetime.now().year) + '/' + str(
             datetime.datetime.now().month) + '/' + str(datetime.datetime.now().day)
 

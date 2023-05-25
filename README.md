@@ -4,8 +4,10 @@ First upload. Needs refinement. </h3>
 <h5>Requires Python >=3.10</h5>
 
 ### Tips:
-- click middle mouse button or press 'u' to <b>undo</b> move 
-- crtl + f to print the FEN position
+- Click middle mouse button or press 'u' to <b>undo</b> move 
+- Crtl + F to print the FEN position
+- Games are <b>automatically saved</b> in the <b>/data/games</b> folder as a pgn file
+- You can forfeit with Ctrl + S
 
 
 ## Setup
