@@ -1,4 +1,4 @@
-from .base import Piece, load_svg
+from .base import Piece
 import pygame as pg
 class Bishop(Piece):
     def __init__(self, position, colour):

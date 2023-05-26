@@ -4,13 +4,6 @@ Common class for all pieces.
 
 import pygame as pg
 from pygame import sprite
-from svglib.svglib import svg2rlg
-import io
-def load_svg(filename):
-    drawing = svg2rlg(filename)
-    str = drawing.asString("png")
-    byte_io = io.BytesIO(str)
-    return pg.image.load(byte_io).convert_alpha()
 
 class Piece(sprite.Sprite):
     def __init__(self):
