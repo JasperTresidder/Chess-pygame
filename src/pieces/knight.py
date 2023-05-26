@@ -9,10 +9,10 @@ class Knight(Piece):
         self.position = position
         if colour == 'black':
             self.piece = 'n'
-            self.picture = pg.image.load("data/img/black_n.png").convert_alpha()
         else:
             self.piece = 'N'
-            self.picture = pg.image.load("data/img/white_n.png").convert_alpha()
+        self.picture = pg.image.load(
+            "data/img/pieces/" + self.piece_set + "/" + colour[0] + self.piece.lower() + ".png").convert_alpha()
 
     def update_legal_moves(self, board, eps, captures):
         self.legal_positions = []

@@ -4,10 +4,18 @@ Common class for all pieces.
 
 import pygame as pg
 from pygame import sprite
+from svglib.svglib import svg2rlg
+import io
+def load_svg(filename):
+    drawing = svg2rlg(filename)
+    str = drawing.asString("png")
+    byte_io = io.BytesIO(str)
+    return pg.image.load(byte_io).convert_alpha()
 
 class Piece(sprite.Sprite):
     def __init__(self):
         super().__init__()
+        self.piece_set = 'cardinal'
         self.dead = False
         self.position = None
         self.colour = None
@@ -147,36 +155,15 @@ class Piece(sprite.Sprite):
 
 
     def draw(self, offset, screen):
-        if self.piece in ['p', 'P']:
-            picture = pg.transform.scale(self.picture, (self.size - 50, self.size - 36))
-            if self.clicked:
-                screen.blit(picture,
-                            (pg.mouse.get_pos()[0] - self.size / 2  + 25,
-                             pg.mouse.get_pos()[1] - self.size / 2 + 18)
-                            )
-            else:
-                screen.blit(picture,
-                                 (offset[0] + self.size * self.position[1] + 25, offset[1] + self.size * self.position[0] + 18))
-        elif self.piece in ['r', 'R']:
-            picture = pg.transform.scale(self.picture, (self.size - 36, self.size - 36))
-            if self.clicked:
-                screen.blit(picture,
-                            (pg.mouse.get_pos()[0] - self.size / 2  + 18,
-                             pg.mouse.get_pos()[1] - self.size / 2 + 18)
-                            )
-            else:
-                screen.blit(picture,
-                                 (offset[0] + self.size * self.position[1] + 18, offset[1] + self.size * self.position[0] + 18))
+        picture = pg.transform.scale(self.picture, (100, 100))
+        if self.clicked:
+            screen.blit(picture,
+                        (pg.mouse.get_pos()[0] - self.size / 2 ,
+                         pg.mouse.get_pos()[1] - self.size / 2)
+                        )
         else:
-            picture = pg.transform.scale(self.picture, (self.size - 20, self.size - 20))
-            if self.clicked:
-                screen.blit(picture,
-                            (pg.mouse.get_pos()[0]-self.size/2 + 10,
-                             pg.mouse.get_pos()[1]-self.size/2 + 10)
-                            )
-            else:
-                screen.blit(picture,
-                             (offset[0] + self.size * self.position[1] + 10, offset[1] + self.size * self.position[0] + 10))
+            screen.blit(picture,
+                        (offset[0] + self.size * self.position[1], offset[1] + self.size * self.position[0]))
 
     def __del__(self):
         self.dead = True

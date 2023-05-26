@@ -1,6 +1,5 @@
-from .base import Piece
+from .base import Piece, load_svg
 import pygame as pg
-
 class Bishop(Piece):
     def __init__(self, position, colour):
         super().__init__()
@@ -9,10 +8,10 @@ class Bishop(Piece):
         self.position = position
         if colour == 'black':
             self.piece = 'b'
-            self.picture = pg.image.load("data/img/black_b.png").convert_alpha()
         else:
             self.piece = 'B'
-            self.picture = pg.image.load("data/img/white_b.png").convert_alpha()
+        self.picture = pg.image.load(
+            "data/img/pieces/" + self.piece_set + "/" + colour[0] + self.piece.lower() + ".png").convert_alpha()
 
     def update_legal_moves(self, board, eps, captures):
         self.legal_positions = []

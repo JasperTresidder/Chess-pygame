@@ -7,13 +7,13 @@ class Rook(Piece):
         self.legal_directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
         self.colour = colour
         self.position = position
+
         if colour == 'black':
             self.piece = 'r'
-            self.picture = pg.image.load("data/img/black_r.png").convert_alpha()
-
         else:
             self.piece = 'R'
-            self.picture = pg.image.load("data/img/white_r.png").convert_alpha()
+        self.picture = pg.image.load(
+            "data/img/pieces/" + self.piece_set + "/" + colour[0] + self.piece.lower() + ".png").convert_alpha()
 
     def update_legal_moves(self, board, eps, captures):
         self.legal_positions = []

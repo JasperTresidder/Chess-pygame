@@ -11,13 +11,13 @@ class Pawn(Piece):
         if colour == 'black':
             self.direction = 1
             self.piece = 'p'
-            self.picture = pg.image.load("data/img/black_p.png").convert_alpha()
             self.legal_directions = [(0, 1), (0, 2)]
         else:
             self.direction = -1
             self.piece = 'P'
-            self.picture = pg.image.load("data/img/white_p.png").convert_alpha()
             self.legal_directions = [(0, -1), (0, -2)]
+        self.picture = pg.image.load(
+            "data/img/pieces/" + self.piece_set + "/" + colour[0] + self.piece.lower() + ".png").convert_alpha()
 
     def update_legal_moves(self, board, eps, captures):
         self.legal_positions = []

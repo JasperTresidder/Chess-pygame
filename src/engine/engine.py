@@ -93,7 +93,7 @@ class Engine:
         self.background = pg.image.load('data/img/background_dark.png').convert()
         self.background = pg.transform.scale(self.background,
                                              (pg.display.get_window_size()[0], pg.display.get_window_size()[1]))
-        self.board_background = pg.image.load('data/img/marble.png').convert()
+        self.board_background = pg.image.load('data/img/boards/marble.png').convert()
         self.board_background = pg.transform.scale(self.board_background,
                                                    (self.size * 8, self.size * 8))
         self.offset = [pg.display.get_window_size()[0] / 2 - 4 * self.size,
