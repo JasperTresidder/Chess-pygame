@@ -1,4 +1,4 @@
-<h3>This is a pygame implementation of chess. Following all rules, playing against stockfish AI or PvP.
+<h3>This is a pygame implementation of chess. Following all rules, playing against stockfish AI, Player vs Player or AI vs AI.
 First upload. Needs refinement. </h3>
 
 <h5>Requires Python >=3.10 <br>
