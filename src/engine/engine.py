@@ -16,6 +16,7 @@ import chess.pgn
 
 # todo: add stockfish bots + evaluation
 
+EVAL_ON = True
 
 def print_eval(evaluation):
     if evaluation["type"] == "cp":
@@ -28,30 +29,45 @@ def print_eval(evaluation):
 
 
 class Engine:
-    def __init__(self, mode: bool):
+    def __init__(self, mode: bool, ai_vs_ai):
         self.play_ai = mode
+        self.ai_vs_ai = ai_vs_ai
         self.game_just_ended = False
         pg.init()
         pg.font.init()
         self.last_move = []
         self.highlighted = []
         self.arrows = []
-        self.stockfish = Stockfish("lit/stockfish_15.1_win_x64_avx2/stockfish-windows-2022-x86-64-avx2.exe",
-                                   depth=3,
-                                   parameters={"Threads": 1, "Minimum Thinking Time": 1, "Hash": 32,
-                                               "Skill Level": 0.001,
-                                               "UCI_LimitStrength": "true",
-                                               "UCI_Elo": 0})
+        if self.ai_vs_ai:
+            self.stockfish = Stockfish("lit/stockfish_15.1_win_x64_avx2/stockfish-windows-2022-x86-64-avx2.exe",
+                                       depth=15,
+                                       parameters={"Threads": 6, "Minimum Thinking Time": 1000, "Hash": 64,
+                                                   "Skill Level": 20,
+                                                   "UCI_Elo": 3000})
+        else:
+            self.stockfish = Stockfish("lit/stockfish_15.1_win_x64_avx2/stockfish-windows-2022-x86-64-avx2.exe",
+                                       depth=3,
+                                       parameters={"Threads": 1, "Minimum Thinking Time": 1, "Hash": 32,
+                                                   "Skill Level": 0.001,
+                                                   "UCI_LimitStrength": "true",
+                                                   "UCI_Elo": 0})
         self.stockfish.set_fen_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
         self.game = chess.pgn.Game()
-        if mode:
+
+        if self.ai_vs_ai:
+            self.game.headers["Event"] = "Computer Vs Computer"
+            self.game.headers["Black"] = "Computer"
+            self.game.headers["White"] = "Computer"
+        elif self.play_ai:
             self.game.headers["Event"] = "Player Vs Computer"
             self.game.headers["Black"] = "Computer"
+            self.game.headers["White"] = "Player"
         else:
             self.game.headers["Event"] = "Player Vs Player"
             self.game.headers["Black"] = "Player"
+            self.game.headers["White"] = "Player"
+
         self.game.headers["Site"] = "UK"
-        self.game.headers["White"] = "Player"
         self.game.headers["WhiteElo"] = "?"
         self.game.headers["BlackElo"] = "?"
         self.game.headers["Date"] = str(datetime.datetime.now().year) + '/' + str(
@@ -100,14 +116,11 @@ class Engine:
                        pg.display.get_window_size()[1] / 2 - 4 * self.size]
         self.update_board()
         self.update_legal_moves()
-        print('Number of legal moves', self.count_legal_moves())
-        self.stockfish.get_best_move()
-        # print(self.stockfish.get_best_move())
-        # print(self.stockfish.get_evaluation())
         self.prev_board = self.board
         self.debug = False
         self.node = self.game
-        self.evaluation = print_eval(self.stockfish.get_evaluation())
+        if EVAL_ON:
+            print_eval(self.stockfish.get_evaluation())
 
     def run(self):
         self.draw_board()
@@ -127,6 +140,7 @@ class Engine:
                 pg.quit()
                 sys.exit()
             elif event.type == pg.MOUSEBUTTONDOWN:
+                self.game_just_ended = False
                 if event.button == 1 and not self.game_just_ended:
                     self.left = True
                     self.click()
@@ -164,138 +178,96 @@ class Engine:
                     elif len(self.game_fens) == 1:
                         self.undo_move(True)
                         self.un_click_right(False)
-        self.game_just_ended = False
         pg.display.flip()
+        if self.ai_vs_ai:
+            self.un_click()
 
     # @timeit
     def un_click(self):
         self.highlighted.clear()
         self.arrows.clear()
-        for row in range(8):
-            for col in range(8):
-                if self.board[row][col] != ' ':
-                    if self.board[row][col].clicked:
-                        # Make move if legal
-                        if self.board[row][col].make_move(self.board, self.offset, self.turn, None, None):
-                            x = int((pg.mouse.get_pos()[0] - self.offset[0]) // self.size)
-                            y = int((pg.mouse.get_pos()[1] - self.offset[1]) // self.size)
-                            if self.turn == 'w':
-                                self.turn = 'b'
-                                move = translate_move(row, col, y, x)
-                                try:
-                                    if self.board[row][col].piece == 'P':
-                                        if y == 0:
-                                            move += 'q'
-                                except:
-                                    pass
-                                self.last_move.append(move)
-                                self.node = self.node.add_variation(chess.Move.from_uci(move))
-                            else:
-                                self.fullmove_number += 1
-                                self.turn = 'w'
-                                if not self.play_ai:
+        if self.ai_vs_ai:
+            self.ai_make_move(0, 0, 0, 0)
+            if EVAL_ON:
+                print_eval(self.stockfish.get_evaluation())
+        else:
+            for row in range(8):
+                for col in range(8):
+                    if self.board[row][col] != ' ':
+                        if self.board[row][col].clicked:
+                            # Make move if legal
+                            if self.board[row][col].make_move(self.board, self.offset, self.turn, None, None):
+                                x = int((pg.mouse.get_pos()[0] - self.offset[0]) // self.size)
+                                y = int((pg.mouse.get_pos()[1] - self.offset[1]) // self.size)
+                                if self.turn == 'w':
+                                    self.turn = 'b'
                                     move = translate_move(row, col, y, x)
                                     try:
-                                        if self.board[row][col].piece == 'p':
-                                            if y == 7:
+                                        if self.board[row][col].piece == 'P':
+                                            if y == 0:
                                                 move += 'q'
                                     except:
                                         pass
                                     self.last_move.append(move)
                                     self.node = self.node.add_variation(chess.Move.from_uci(move))
+                                else:
+                                    self.fullmove_number += 1
+                                    self.turn = 'w'
+                                    if not self.play_ai:
+                                        move = translate_move(row, col, y, x)
+                                        try:
+                                            if self.board[row][col].piece == 'p':
+                                                if y == 7:
+                                                    move += 'q'
+                                        except:
+                                            pass
+                                        self.last_move.append(move)
+                                        self.node = self.node.add_variation(chess.Move.from_uci(move))
 
-                            self.moved()
-                            try:
+                                self.moved()
                                 self.board[y][x].clicked = False
+                                if EVAL_ON:
+                                    print_eval(self.stockfish.get_evaluation())
                                 if self.play_ai:
                                     self.ai_make_move(x, y, row, col)
-                            except:
-                                break
-
-
-                        else:
-                            self.board[row][col].clicked = False
-                        break
+                                    if EVAL_ON:
+                                        print_eval(self.stockfish.get_evaluation())
+                            else:
+                                self.board[row][col].clicked = False
+                            break
 
     def ai_make_move(self, x, y, row, col):
-        if self.turn == 'b':  # Engine Moves
-            self.draw_board()
-            self.draw_pieces()
-            pg.display.flip()
-            self.stockfish.set_fen_position(self.game_fens[-1])
-            moves = self.stockfish.get_top_moves(5)
-            time.sleep(0.15)
-            move = self.move_strength(moves)
-            if move != None:
-                self.last_move.append(move)
-                try:
-                    if self.board[row][col].piece == 'p':
-                        if y == 7:
-                            move += 'q'
-                except:
-                    pass
-                self.node = self.node.add_variation(chess.Move.from_uci(move))
-                self.engine_make_move(move)
-                print_eval(self.stockfish.get_evaluation())
+        # Engine Moves
+        self.draw_board()
+        self.draw_pieces()
+        pg.display.flip()
+        self.stockfish.set_fen_position(self.game_fens[-1])
+        time.sleep(0.15)
+        move = self.move_strength()
+        if move != None:
+            self.last_move.append(move)
+            try:
+                if self.board[row][col].piece == 'p': # auto promote queen
+                    if y == 7:
+                        move += 'q'
+            except:
+                pass
+            self.node = self.node.add_variation(chess.Move.from_uci(move))
+            self.engine_make_move(move) # Making the move
 
-    def move_strength(self, moves):
+    def move_strength(self):
         # return moves[0]["Move"]
-        a = random.randint(1, 5)
+        if self.ai_vs_ai:
+            if self.turn == 'w':
+                # self.stockfish.set_skill_level(20)
+                a = 150
+            else:
+                # self.stockfish.set_skill_level(1)
+                a = 150
+        else:
+            a = random.randint(1, 5)
         move = self.stockfish.get_best_move_time(a)
         return move
-        # random_number = random.random()
-        # if random_number < 0.3:
-        #     return moves[0]["Move"]
-        # elif random_number < 0.6:
-        #     try:
-        #         return moves[1]["Move"]
-        #     except:
-        #         try:
-        #             return moves[0]["Move"]
-        #         except:
-        #             return None
-        # elif random_number < 0.9:
-        #     try:
-        #         return moves[2]["Move"]
-        #     except:
-        #         try:
-        #             return moves[1]["Move"]
-        #         except:
-        #             try:
-        #                 return moves[0]["Move"]
-        #             except:
-        #                 return None
-        # elif random_number < 0.95:
-        #     try:
-        #         return moves[3]["Move"]
-        #     except:
-        #         try:
-        #             return moves[2]["Move"]
-        #         except:
-        #             try:
-        #                 return moves[1]["Move"]
-        #             except:
-        #                 try:
-        #                     return moves[0]["Move"]
-        #                 except:
-        #                     return None
-        # else:
-        #     try:
-        #         return moves[4]["Move"]
-        #     except:
-        #         try:
-        #             return moves[3]["Move"]
-        #         except:
-        #             try:
-        #                 return moves[2]["Move"]
-        #             except:
-        #                 try:
-        #                     return moves[1]["Move"]
-        #                 except:
-        #                     try:
-        #                         return moves[0]["Move"]
-        #                     except:
-        #                         return None
 
     def un_click_right(self, right_click):
         txr = int((pg.mouse.get_pos()[0] - self.offset[0]) // self.size)
@@ -411,7 +383,38 @@ class Engine:
         self.game_fens.append(
             create_FEN(self.board, self.turn, self.castle_rights, self.en_passant_square, self.fullmove_number))
         # print(self.game_fens[-1])
-        if legal_moves == 0 or self.stockfish.get_top_moves(1) == []:
+        if self.node.board().is_repetition():
+            self.game.headers["Result"] = "1/2 - 1/2"
+            print("DRAW BY REPETITION")
+            pg.mixer.music.load('data/sounds/mate.wav')
+            pg.mixer.music.play(1)
+            time.sleep(0.15)
+            pg.mixer.music.play(1)
+            self.game.headers["Result"] = "1/2 - 1/2"
+            self.end_game()
+        if self.node.board().is_stalemate():
+            self.game.headers["Result"] = "1/2 - 1/2"
+            print("STALEMATE")
+            pg.mixer.music.load('data/sounds/mate.wav')
+            pg.mixer.music.play(1)
+            time.sleep(0.15)
+            pg.mixer.music.play(1)
+            self.end_game()
+        if self.node.board().is_insufficient_material():
+            self.game.headers["Result"] = "1/2 - 1/2"
+            print("INSUFFICIENT MATERIAL")
+            pg.mixer.music.load('data/sounds/mate.wav')
+            pg.mixer.music.play(1)
+            time.sleep(0.15)
+            pg.mixer.music.play(1)
+            self.end_game()
+        if self.node.board().is_checkmate() or legal_moves == 0:
+            if self.node.board().outcome().winner:
+                self.game.headers["Result"] = "1 - 0"
+                print("CHECKMATE WHITE WINS !!")
+            else:
+                self.game.headers["Result"] = "0 - 1"
+                print("CHECKMATE BLACK WINS !!")
             pg.mixer.music.load('data/sounds/mate.wav')
             pg.mixer.music.play(1)
             time.sleep(0.15)
@@ -422,7 +425,7 @@ class Engine:
     def end_game(self):
         self.game_just_ended = True
         dt = datetime.datetime.now()
-        dt = dt.strftime("%Y%m%d_%H%M%S")
+        dt = dt.strftime("%Y%m%d_%H%M%S_%f")
         print(self.game, file=open("data/games/" + dt + ".pgn", "w"), end="\n\n")
         self.reset_game()
         # file = open(str(dt) + ".pgn" + "w")
@@ -458,10 +461,21 @@ class Engine:
         self.game.headers["Site"] = "UK"
         self.game.headers["Date"] = str(datetime.datetime.now().year) + '/' + str(
             datetime.datetime.now().month) + '/' + str(datetime.datetime.now().day)
-        self.game.headers["White"] = "Jasper"
-        self.game.headers["WhiteElo"] = "3000"
-        self.game.headers["Black"] = "Computer"
-        self.game.headers["BlackElo"] = "1"
+        if self.ai_vs_ai:
+            self.game.headers["Event"] = "Computer Vs Computer"
+            self.game.headers["Black"] = "Computer"
+            self.game.headers["White"] = "Computer"
+        elif self.play_ai:
+            self.game.headers["Event"] = "Player Vs Computer"
+            self.game.headers["Black"] = "Computer"
+            self.game.headers["White"] = "Player"
+        else:
+            self.game.headers["Event"] = "Player Vs Player"
+            self.game.headers["Black"] = "Player"
+            self.game.headers["White"] = "Player"
+
+        self.game.headers["WhiteElo"] = "?"
+        self.game.headers["BlackElo"] = "?"
 
         self.node = self.game
         self.update_board()
