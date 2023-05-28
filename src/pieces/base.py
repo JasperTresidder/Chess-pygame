@@ -8,7 +8,7 @@ from pygame import sprite
 class Piece(sprite.Sprite):
     def __init__(self):
         super().__init__()
-        self.piece_set = 'cardinal'
+        self.piece_set = 'chessmonk'
         self.dead = False
         self.position = None
         self.colour = None
@@ -147,8 +147,9 @@ class Piece(sprite.Sprite):
             return False
 
 
-    def draw(self, offset, screen):
-        picture = pg.transform.scale(self.picture, (100, 100))
+    def draw(self, offset, screen, size):
+        self.size = size
+        picture = pg.transform.scale(self.picture, (self.size, self.size))
         if self.clicked:
             screen.blit(picture,
                         (pg.mouse.get_pos()[0] - self.size / 2 ,

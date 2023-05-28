@@ -29,8 +29,8 @@ def print_eval(evaluation):
 
 
 class Engine:
-    def __init__(self, mode: bool, ai_vs_ai):
-        self.play_ai = mode
+    def __init__(self, player_vs_ai: bool, ai_vs_ai: bool):
+        self.player_vs_ai = player_vs_ai
         self.ai_vs_ai = ai_vs_ai
         self.game_just_ended = False
         pg.init()
@@ -40,8 +40,8 @@ class Engine:
         self.arrows = []
         if self.ai_vs_ai:
             self.stockfish = Stockfish("lit/stockfish_15.1_win_x64_avx2/stockfish-windows-2022-x86-64-avx2.exe",
-                                       depth=15,
-                                       parameters={"Threads": 6, "Minimum Thinking Time": 1000, "Hash": 64,
+                                       depth=99,
+                                       parameters={"Threads": 6, "Minimum Thinking Time": 100, "Hash": 64,
                                                    "Skill Level": 20,
                                                    "UCI_Elo": 3000})
         else:
@@ -58,7 +58,7 @@ class Engine:
             self.game.headers["Event"] = "Computer Vs Computer"
             self.game.headers["Black"] = "Computer"
             self.game.headers["White"] = "Computer"
-        elif self.play_ai:
+        elif self.player_vs_ai:
             self.game.headers["Event"] = "Player Vs Computer"
             self.game.headers["Black"] = "Computer"
             self.game.headers["White"] = "Player"
@@ -73,7 +73,7 @@ class Engine:
         self.game.headers["Date"] = str(datetime.datetime.now().year) + '/' + str(
             datetime.datetime.now().month) + '/' + str(datetime.datetime.now().day)
 
-        self.screen = pg.display.set_mode((980, 980), vsync=1)
+        self.screen = pg.display.set_mode((pg.display.get_desktop_sizes()[0][0] -50, pg.display.get_desktop_sizes()[0][1] -70), pg.RESIZABLE, vsync=1)
         # "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
         self.board, self.turn, self.castle_rights, self.en_passant_square, self.halfmoves_since_last_capture, self.fullmove_number = parse_FEN(
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
@@ -92,7 +92,8 @@ class Engine:
                         self.white_pieces.add(piece)
                 except:
                     pass
-        self.size = 100
+        self.size = int((pg.display.get_window_size()[1] - 200) / 8)
+        self.default_size = int(pg.display.get_window_size()[1] - 200 / 8)
         self.font = pg.font.SysFont('arial', 30)
         self.updates = False
         self.arrow_colour = (252, 177, 3)
@@ -121,6 +122,7 @@ class Engine:
         self.node = self.game
         if EVAL_ON:
             print_eval(self.stockfish.get_evaluation())
+        self.clock = pg.time.Clock()
 
     def run(self):
         self.draw_board()
@@ -178,9 +180,30 @@ class Engine:
                     elif len(self.game_fens) == 1:
                         self.undo_move(True)
                         self.un_click_right(False)
-        pg.display.flip()
+            elif event.type == pg.VIDEORESIZE:
+                # There's some code to add back window content here.
+                self.screen = pg.display.set_mode((event.w, event.h), pg.RESIZABLE, vsync=1)
+                self.background = pg.image.load('data/img/background_dark.png').convert()
+                self.background = pg.transform.scale(self.background,
+                                                     (pg.display.get_window_size()[0], pg.display.get_window_size()[1]))
+                self.board_background = pg.image.load('data/img/boards/marble.png').convert()
+                self.size = self.default_size
+                if (pg.display.get_window_size()[0]-200)/8 < self.default_size or (pg.display.get_window_size()[1]-200)/8 < self.default_size:
+                    if pg.display.get_window_size()[0] < pg.display.get_window_size()[1]:
+                        self.size = int((pg.display.get_window_size()[0]-200)/8)
+                    else:
+                        self.size = int((pg.display.get_window_size()[1]-200)/8)
+                if self.size <= 1:
+                    self.size = 1
+                self.board_background = pg.transform.scale(self.board_background,
+                                                           (self.size * 8, self.size * 8))
+                self.offset = [pg.display.get_window_size()[0] / 2 - 4 * self.size,
+                               pg.display.get_window_size()[1] / 2 - 4 * self.size]
+
         if self.ai_vs_ai:
             self.un_click()
+        pg.display.flip()
+        self.clock.tick(300)
 
     # @timeit
     def un_click(self):
@@ -213,7 +236,7 @@ class Engine:
                                 else:
                                     self.fullmove_number += 1
                                     self.turn = 'w'
-                                    if not self.play_ai:
+                                    if not self.player_vs_ai:
                                         move = translate_move(row, col, y, x)
                                         try:
                                             if self.board[row][col].piece == 'p':
@@ -228,7 +251,7 @@ class Engine:
                                 self.board[y][x].clicked = False
                                 if EVAL_ON:
                                     print_eval(self.stockfish.get_evaluation())
-                                if self.play_ai:
+                                if self.player_vs_ai:
                                     self.ai_make_move(x, y, row, col)
                                     if EVAL_ON:
                                         print_eval(self.stockfish.get_evaluation())
@@ -260,10 +283,10 @@ class Engine:
         if self.ai_vs_ai:
             if self.turn == 'w':
                 # self.stockfish.set_skill_level(20)
-                a = 150
+                a = 100
             else:
                 # self.stockfish.set_skill_level(1)
-                a = 150
+                a = 100
         else:
             a = random.randint(1, 5)
         move = self.stockfish.get_best_move_time(a)
@@ -384,16 +407,13 @@ class Engine:
             create_FEN(self.board, self.turn, self.castle_rights, self.en_passant_square, self.fullmove_number))
         # print(self.game_fens[-1])
         if self.node.board().is_repetition():
-            self.game.headers["Result"] = "1/2 - 1/2"
             print("DRAW BY REPETITION")
             pg.mixer.music.load('data/sounds/mate.wav')
             pg.mixer.music.play(1)
             time.sleep(0.15)
             pg.mixer.music.play(1)
-            self.game.headers["Result"] = "1/2 - 1/2"
             self.end_game()
         if self.node.board().is_stalemate():
-            self.game.headers["Result"] = "1/2 - 1/2"
             print("STALEMATE")
             pg.mixer.music.load('data/sounds/mate.wav')
             pg.mixer.music.play(1)
@@ -401,7 +421,6 @@ class Engine:
             pg.mixer.music.play(1)
             self.end_game()
         if self.node.board().is_insufficient_material():
-            self.game.headers["Result"] = "1/2 - 1/2"
             print("INSUFFICIENT MATERIAL")
             pg.mixer.music.load('data/sounds/mate.wav')
             pg.mixer.music.play(1)
@@ -410,10 +429,8 @@ class Engine:
             self.end_game()
         if self.node.board().is_checkmate() or legal_moves == 0:
             if self.node.board().outcome().winner:
-                self.game.headers["Result"] = "1 - 0"
                 print("CHECKMATE WHITE WINS !!")
             else:
-                self.game.headers["Result"] = "0 - 1"
                 print("CHECKMATE BLACK WINS !!")
             pg.mixer.music.load('data/sounds/mate.wav')
             pg.mixer.music.play(1)
@@ -465,7 +482,7 @@ class Engine:
             self.game.headers["Event"] = "Computer Vs Computer"
             self.game.headers["Black"] = "Computer"
             self.game.headers["White"] = "Computer"
-        elif self.play_ai:
+        elif self.player_vs_ai:
             self.game.headers["Event"] = "Player Vs Computer"
             self.game.headers["Black"] = "Computer"
             self.game.headers["White"] = "Player"
@@ -730,17 +747,18 @@ class Engine:
         for i in range(8):
             letter = board_letters[i]
             surface = self.font.render(str(letter), False, (255, 255, 255))
-            self.screen.blit(surface, (
-                self.offset[1] + self.size / 2 + self.size * i - 8, self.offset[0] + 16 * self.size / 2 + 15))
+            self.screen.blit(surface, (self.offset[0] + self.size/2 - 5 + self.size * i,
+                                       self.offset[
+                                           1] + 17 * self.size / 2  - 25))  # draw letters + numbers
 
     def draw_pieces(self, piece_selected=None):
         for piece in self.all_pieces:
             if piece != piece_selected:
-                piece.draw(self.offset, self.screen)
+                piece.draw(self.offset, self.screen, self.size)
 
         # Draw the piece last, if it is being clicked/dragged
         if piece_selected != None:
-            piece_selected.draw(self.offset, self.screen)
+            piece_selected.draw(self.offset, self.screen, self.size)
 
         self.draw_arrows()
 
