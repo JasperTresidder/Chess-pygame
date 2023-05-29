@@ -16,7 +16,7 @@ import chess.pgn
 
 # todo: add stockfish bots + evaluation
 
-EVAL_ON = True
+EVAL_ON = False
 
 def print_eval(evaluation):
     if evaluation["type"] == "cp":
@@ -73,7 +73,7 @@ class Engine:
         self.game.headers["Date"] = str(datetime.datetime.now().year) + '/' + str(
             datetime.datetime.now().month) + '/' + str(datetime.datetime.now().day)
 
-        self.screen = pg.display.set_mode((pg.display.get_desktop_sizes()[0][0] -50, pg.display.get_desktop_sizes()[0][1] -70), pg.RESIZABLE, vsync=1)
+        self.screen = pg.display.set_mode((pg.display.get_desktop_sizes()[0][1] - 70, pg.display.get_desktop_sizes()[0][1] -70), pg.RESIZABLE, vsync=1)
         # "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
         self.board, self.turn, self.castle_rights, self.en_passant_square, self.halfmoves_since_last_capture, self.fullmove_number = parse_FEN(
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
@@ -120,8 +120,9 @@ class Engine:
         self.prev_board = self.board
         self.debug = False
         self.node = self.game
+        self.show_numbers = True
         if EVAL_ON:
-            print_eval(self.stockfish.get_evaluation())
+            self.get_eval()
         self.clock = pg.time.Clock()
 
     def run(self):
@@ -187,12 +188,20 @@ class Engine:
                 self.background = pg.transform.scale(self.background,
                                                      (pg.display.get_window_size()[0], pg.display.get_window_size()[1]))
                 self.board_background = pg.image.load('data/img/boards/marble.png').convert()
-                self.size = self.default_size
-                if (pg.display.get_window_size()[0]-200)/8 < self.default_size or (pg.display.get_window_size()[1]-200)/8 < self.default_size:
+                if self.default_size >= pg.display.get_window_size()[1] or self.default_size >= pg.display.get_window_size()[0]:
+                    self.show_numbers = False
+                    if pg.display.get_window_size()[0] < pg.display.get_window_size()[1]:
+                        self.size = int((pg.display.get_window_size()[0])/8)
+                    else:
+                        self.size = int((pg.display.get_window_size()[1])/8)
+                elif (self.default_size < pg.display.get_window_size()[1] < self.default_size + 200) or (self.default_size < pg.display.get_window_size()[0] < self.default_size + 1000):
+                    self.show_numbers = True
                     if pg.display.get_window_size()[0] < pg.display.get_window_size()[1]:
                         self.size = int((pg.display.get_window_size()[0]-200)/8)
                     else:
                         self.size = int((pg.display.get_window_size()[1]-200)/8)
+                else:
+                    self.show_numbers = True
                 if self.size <= 1:
                     self.size = 1
                 self.board_background = pg.transform.scale(self.board_background,
@@ -205,6 +214,11 @@ class Engine:
         pg.display.flip()
         self.clock.tick(300)
 
+    def get_eval(self):
+        self.stockfish.set_depth(20)
+        print_eval(self.stockfish.get_evaluation())
+        self.stockfish.set_depth(99)
+
     # @timeit
     def un_click(self):
         self.highlighted.clear()
@@ -212,7 +226,7 @@ class Engine:
         if self.ai_vs_ai:
             self.ai_make_move(0, 0, 0, 0)
             if EVAL_ON:
-                print_eval(self.stockfish.get_evaluation())
+                self.get_eval()
         else:
             for row in range(8):
                 for col in range(8):
@@ -250,11 +264,11 @@ class Engine:
                                 self.moved()
                                 self.board[y][x].clicked = False
                                 if EVAL_ON:
-                                    print_eval(self.stockfish.get_evaluation())
+                                    self.get_eval()
                                 if self.player_vs_ai:
                                     self.ai_make_move(x, y, row, col)
                                     if EVAL_ON:
-                                        print_eval(self.stockfish.get_evaluation())
+                                        self.get_eval()
                             else:
                                 self.board[row][col].clicked = False
                             break
@@ -283,10 +297,10 @@ class Engine:
         if self.ai_vs_ai:
             if self.turn == 'w':
                 # self.stockfish.set_skill_level(20)
-                a = 100
+                a = 150
             else:
                 # self.stockfish.set_skill_level(1)
-                a = 100
+                a = 150
         else:
             a = random.randint(1, 5)
         move = self.stockfish.get_best_move_time(a)
@@ -693,8 +707,9 @@ class Engine:
 
     def update_board(self):  # is currently clicking a piece?
         try:
-            if self.board[self.ty][self.tx] != ' ':
-                self.board[self.ty][self.tx].update(self.screen, self.offset, self.turn)
+            if -1 < self.tx < 8 and -1 < self.ty < 8:
+                if self.board[self.ty][self.tx] != ' ':
+                    self.board[self.ty][self.tx].update(self.screen, self.offset, self.turn)
         except:
             pass
 
@@ -739,17 +754,18 @@ class Engine:
             count += 1
 
         # draw letters + numbers
-        for i in range(8):
-            letter = 8 - i
-            surface = self.font.render(str(letter), False, (255, 255, 255))
-            self.screen.blit(surface, (self.offset[0] - self.size / 2,
-                                       self.offset[1] + self.size / 2 + self.size * i - 13))  # draw letters + numbers
-        for i in range(8):
-            letter = board_letters[i]
-            surface = self.font.render(str(letter), False, (255, 255, 255))
-            self.screen.blit(surface, (self.offset[0] + self.size/2 - 5 + self.size * i,
-                                       self.offset[
-                                           1] + 17 * self.size / 2  - 25))  # draw letters + numbers
+        if self.show_numbers:
+            for i in range(8):
+                letter = 8 - i
+                surface = self.font.render(str(letter), False, (255, 255, 255))
+                self.screen.blit(surface, (self.offset[0] - self.size / 2,
+                                           self.offset[1] + self.size / 2 + self.size * i - 13))  # draw letters + numbers
+            for i in range(8):
+                letter = board_letters[i]
+                surface = self.font.render(str(letter), False, (255, 255, 255))
+                self.screen.blit(surface, (self.offset[0] + self.size/2 - 5 + self.size * i,
+                                           self.offset[
+                                               1] + 17 * self.size / 2  - 25))  # draw letters + numbers
 
     def draw_pieces(self, piece_selected=None):
         for piece in self.all_pieces:
