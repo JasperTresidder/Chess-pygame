@@ -9,6 +9,7 @@ Size: 166Mb</h5>
 - Crtl + F to print the FEN position
 - Games are <b>automatically saved</b> in the <b>/data/games</b> folder as a pgn file
 - You can forfeit with Ctrl + S
+- You can resize the window how you like 
 
 
 ## Setup
@@ -33,6 +34,12 @@ MacOS/Unix:</h4>
 - Place the Stockfish application in the lit/stockfish_15.1_win_x64_avx2/ dictionary<br>
 - Then change the reference to this path in the __init__ of engine.py (line 42 & 48) located in the src dictionary. 
 </div>
+
+### TODO
+- Async evaluation of the position. 
+- Ability to play vs AI as black
+- Load games
+- Click through moves using arrow keys.
 
 ![image](https://github.com/JasperTresidder/Chess-pygame/assets/51917264/2665b390-faa4-41a9-aff3-b8b0884b3623)
 ![image](https://github.com/JasperTresidder/Chess-pygame/assets/51917264/f5e4a61b-5c11-4e92-93ff-e2bcb222ed1c)
