@@ -8,8 +8,7 @@ from src.pieces.queen import Queen
 from stockfish import Stockfish
 import chess
 import chess.pgn
-
-
+import platform
 # "8/8/8/2k5/2pP4/8/B7/4K3 b - d3 0 3" - can en passant out of check!
 # "rnb2k1r/pp1Pbppp/2p5/q7/2B5/8/PPPQNnPP/RNB1K2R w KQ - 3 9" - 39 moves can promote to other pieces
 # rnbq1bnr/ppp1p1pp/3p4/6P1/1k1PPp1P/1PP2P1B/PB6/RN1QK2R b KQkq - 0 13 - king cant go to a4 here
@@ -38,16 +37,22 @@ class Engine:
         self.last_move = []
         self.highlighted = []
         self.arrows = []
+        self.platform = None
+        if 'Windows' in platform.platform():
+            self.platform = 'Windows/stockfish.exe'
+        if 'macOS' in platform.platform():
+            self.platform = 'macOS/stockfish'
+        print("lit/stockfish/" + self.platform + "/stockfish")
         if self.ai_vs_ai:
-            self.stockfish = Stockfish("lit/stockfish_15.1_win_x64_avx2/stockfish-windows-2022-x86-64-avx2.exe",
+            self.stockfish = Stockfish("lit/stockfish/" + self.platform,
                                        depth=99,
                                        parameters={"Threads": 6, "Minimum Thinking Time": 100, "Hash": 64,
                                                    "Skill Level": 20,
                                                    "UCI_Elo": 3000})
         else:
-            self.stockfish = Stockfish("lit/stockfish_15.1_win_x64_avx2/stockfish-windows-2022-x86-64-avx2.exe",
-                                       depth=3,
-                                       parameters={"Threads": 1, "Minimum Thinking Time": 1, "Hash": 32,
+            self.stockfish = Stockfish("lit/stockfish/" + self.platform,
+                                       depth=1,
+                                       parameters={"Threads": 1, "Minimum Thinking Time": 1, "Hash": 2,
                                                    "Skill Level": 0.001,
                                                    "UCI_LimitStrength": "true",
                                                    "UCI_Elo": 0})
@@ -262,7 +267,10 @@ class Engine:
                                         self.node = self.node.add_variation(chess.Move.from_uci(move))
 
                                 self.moved()
-                                self.board[y][x].clicked = False
+                                try:
+                                    self.board[y][x].clicked = False
+                                except:
+                                    pass
                                 if EVAL_ON:
                                     self.get_eval()
                                 if self.player_vs_ai:
