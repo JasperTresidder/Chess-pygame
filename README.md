@@ -41,5 +41,5 @@ MacOS/Unix:</h4>
 - Load games
 - Click through moves using arrow keys.
 
-![image](https://github.com/JasperTresidder/Chess-pygame/assets/51917264/2665b390-faa4-41a9-aff3-b8b0884b3623)
-![image](https://github.com/JasperTresidder/Chess-pygame/assets/51917264/f5e4a61b-5c11-4e92-93ff-e2bcb222ed1c)
+![image](https://github.com/JasperTresidder/Chess-pygame/assets/51917264/0f709b40-3da8-4fd0-a88d-20406e1604e4)
+![image](https://github.com/JasperTresidder/Chess-pygame/assets/51917264/1244379c-2a06-46aa-9b9e-4b0a249864aa)
