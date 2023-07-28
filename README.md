@@ -43,3 +43,7 @@ MacOS/Unix:</h4>
 
 ![image](https://github.com/JasperTresidder/Chess-pygame/assets/51917264/0f709b40-3da8-4fd0-a88d-20406e1604e4)
 ![image](https://github.com/JasperTresidder/Chess-pygame/assets/51917264/1244379c-2a06-46aa-9b9e-4b0a249864aa)
+![image](https://github.com/JasperTresidder/Chess-pygame/assets/51917264/6ec8d9db-265c-4104-b6c5-89be04d84cda)
+![image](https://github.com/JasperTresidder/Chess-pygame/assets/51917264/0259b5f8-c75a-4eda-8815-89f93b4d6c47)
+
+
