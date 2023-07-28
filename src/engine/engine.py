@@ -376,7 +376,7 @@ class Engine:
                 # self.stockfish.set_skill_level(1)
                 a = 15*(strength+1)
         else:
-            a = random.randint(strength*2, 5+strength*2)
+            a = random.randint((1+strength), (5+strength))
         move = self.stockfish.get_best_move_time(a)
         return move
 
@@ -617,7 +617,8 @@ class Engine:
                                 self.white_pieces.add(piece)
                     except:
                         pass
-
+            for piece in self.all_pieces:
+                piece.change_type(self.piece_type)
             self.last_move.pop()
             self.node = self.node.parent  # allows for undoes to show in analysis on https://chess.com/analysis
 

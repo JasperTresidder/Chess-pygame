@@ -83,6 +83,7 @@ class SettingsMenu(pm.menu.Menu):
 
         self.confirms = self.add.button('Confirm', self.confirm, accept_kwargs=True, font_shadow=True,
                         font_shadow_color=(100, 100, 100), font_background_color=(0, 200, 0), cursor=11, font_color=(0,0,0))
+        self.text = self.add.label('Undo - U\nSave and reset - Ctrl + S\nPrint game FEN position - Ctrl + F', font_size=20, border_color=(150,150,150), border_width=3)
         self.resized = False
 
     def run(self):
