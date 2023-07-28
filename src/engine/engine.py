@@ -33,6 +33,12 @@ class Engine:
     def __init__(self, player_vs_ai: bool, ai_vs_ai: bool):
         self.player_vs_ai = player_vs_ai
         self.ai_vs_ai = ai_vs_ai
+        if self.player_vs_ai:
+            self.mode = 'pvai'
+        elif self.ai_vs_ai:
+            self.mode = 'aivai'
+        else:
+            self.mode = 'pvp'
         self.game_just_ended = False
         pg.init()
         pg.font.init()
@@ -86,7 +92,7 @@ class Engine:
 
         self.screen = pg.display.set_mode((pg.display.get_desktop_sizes()[0][1] - 70, pg.display.get_desktop_sizes()[0][1] - 70), pg.RESIZABLE, vsync=1)
         # self.settings = Settings(self.screen, (pg.display.get_desktop_sizes()[0][1] - 70, pg.display.get_desktop_sizes()[0][1] - 70))
-        self.settings = SettingsMenu(title='Settings', width=pg.display.get_desktop_sizes()[0][1] - 70, height=pg.display.get_desktop_sizes()[0][1] - 70,surface=self.screen, parent=self, piece_type=self.piece_type, strength=self.ai_strength, style=self.board_style, theme=pm.themes.THEME_DARK)
+        self.settings = SettingsMenu(title='Settings', width=pg.display.get_desktop_sizes()[0][1] - 70, height=pg.display.get_desktop_sizes()[0][1] - 70,surface=self.screen, parent=self, piece_type=self.piece_type, strength=self.ai_strength, style=self.board_style, mode=self.mode, theme=pm.themes.THEME_DARK)
         # "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
         self.board, self.turn, self.castle_rights, self.en_passant_square, self.halfmoves_since_last_capture, self.fullmove_number = parse_FEN(
@@ -201,7 +207,7 @@ class Engine:
             elif event.type == pg.VIDEORESIZE:
                 # There's some code to add back window content here.
                 self.screen = pg.display.set_mode((event.w, event.h), pg.RESIZABLE, vsync=1)
-                self.settings = SettingsMenu(title='Settings', width=event.w, height=event.h, surface=self.screen, parent=self, piece_type=self.piece_type, strength=self.ai_strength, style=self.board_style, theme=pm.themes.THEME_DARK)
+                self.settings = SettingsMenu(title='Settings', width=event.w, height=event.h, surface=self.screen, parent=self, piece_type=self.piece_type, strength=self.ai_strength, style=self.board_style, mode=self.mode, theme=pm.themes.THEME_DARK)
                 self.background = pg.image.load('data/img/background_dark.png').convert()
                 self.background = pg.transform.smoothscale(self.background,
                                                            (pg.display.get_window_size()[0], pg.display.get_window_size()[1]))
@@ -303,7 +309,7 @@ class Engine:
     def check_resize(self):
         self.screen = pg.display.set_mode((self.screen.get_width(), self.screen.get_height()), pg.RESIZABLE, vsync=1)
         self.settings = SettingsMenu(title='Settings', width=self.screen.get_width(), height=self.screen.get_height(), surface=self.screen, parent=self,
-                                     piece_type=self.piece_type, strength=self.ai_strength,  style=self.board_style, theme=pm.themes.THEME_DARK)
+                                     piece_type=self.piece_type, strength=self.ai_strength,  style=self.board_style, mode=self.mode, theme=pm.themes.THEME_DARK)
         self.background = pg.image.load('data/img/background_dark.png').convert()
         self.background = pg.transform.smoothscale(self.background,
                                                    (pg.display.get_window_size()[0], pg.display.get_window_size()[1]))
@@ -332,6 +338,7 @@ class Engine:
 
 
     def change_mode(self, mode):
+        self.mode = mode
         if mode == 'pvp':
             self.ai_vs_ai = False
             self.player_vs_ai = False
@@ -556,6 +563,8 @@ class Engine:
                             self.white_pieces.add(piece)
                 except:
                     pass
+        for piece in self.all_pieces:
+            piece.change_type(self.piece_type)
         self.last_move = []
         self.game = chess.pgn.Game()
         self.game.headers["Event"] = "Player Vs Computer"
