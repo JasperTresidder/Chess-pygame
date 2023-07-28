@@ -2,11 +2,13 @@ from .base import Piece
 import pygame as pg
 
 class Queen(Piece):
-    def __init__(self, position, colour):
-        super().__init__()
+    def __init__(self, position, colour, piece_type=None, *args, **kwargs):
+        super().__init__(*args, *kwargs)
         self.legal_directions = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (-1, 1), (1, -1)]
         self.colour = colour
         self.position = position
+        if piece_type is not None:
+            self.piece_set = piece_type
         if colour == 'black':
             self.piece = 'q'
         else:

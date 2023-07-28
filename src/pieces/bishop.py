@@ -1,8 +1,8 @@
 from .base import Piece
 import pygame as pg
 class Bishop(Piece):
-    def __init__(self, position, colour):
-        super().__init__()
+    def __init__(self, position, colour, *args, **kwargs):
+        super().__init__(*args, *kwargs)
         self.legal_directions = [(1, 1), (-1, -1), (-1, 1), (1, -1)]
         self.colour = colour
         self.position = position

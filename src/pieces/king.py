@@ -3,8 +3,8 @@ import pygame as pg
 
 
 class King(Piece):
-    def __init__(self, position, colour, castling_rights):
-        super().__init__()
+    def __init__(self, position, colour, castling_rights, *args, **kwargs):
+        super().__init__(*args, *kwargs)
         self.castling_rights = castling_rights
         self.legal_directions = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (-1, 1), (1, -1)]
         self.colour = colour

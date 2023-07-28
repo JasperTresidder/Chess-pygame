@@ -3,8 +3,8 @@ import pygame as pg
 
 
 class Pawn(Piece):
-    def __init__(self, position, colour, has_moved=False):
-        super().__init__()
+    def __init__(self, position, colour, has_moved=False, *args, **kwargs):
+        super().__init__(*args, *kwargs)
         self.has_moved = has_moved
         self.colour = colour
         self.position = position

@@ -1,6 +1,7 @@
 import datetime
 import random
 import sys
+from src.engine.settings import SettingsMenu
 from src.functions.fen import *
 import pygame as pg
 from src.functions.timer import *
@@ -8,14 +9,15 @@ from src.pieces.queen import Queen
 from stockfish import Stockfish
 import chess
 import chess.pgn
+import pygame_menu as pm
 import platform
 # "8/8/8/2k5/2pP4/8/B7/4K3 b - d3 0 3" - can en passant out of check!
 # "rnb2k1r/pp1Pbppp/2p5/q7/2B5/8/PPPQNnPP/RNB1K2R w KQ - 3 9" - 39 moves can promote to other pieces
 # rnbq1bnr/ppp1p1pp/3p4/6P1/1k1PPp1P/1PP2P1B/PB6/RN1QK2R b KQkq - 0 13 - king cant go to a4 here
 
-# todo: add stockfish bots + evaluation
 
 EVAL_ON = False
+
 
 def print_eval(evaluation):
     if evaluation["type"] == "cp":
@@ -42,7 +44,7 @@ class Engine:
             self.platform = 'Windows/stockfish.exe'
         if 'macOS' in platform.platform():
             self.platform = 'macOS/stockfish'
-        print("lit/stockfish/" + self.platform + "/stockfish")
+        print("lit/stockfish/" + self.platform)
         if self.ai_vs_ai:
             self.stockfish = Stockfish("lit/stockfish/" + self.platform,
                                        depth=99,
@@ -57,6 +59,7 @@ class Engine:
                                                    "UCI_LimitStrength": "true",
                                                    "UCI_Elo": 0})
         self.stockfish.set_fen_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+        self.ai_strength = 0
         self.game = chess.pgn.Game()
 
         if self.ai_vs_ai:
@@ -78,28 +81,32 @@ class Engine:
         self.game.headers["Date"] = str(datetime.datetime.now().year) + '/' + str(
             datetime.datetime.now().month) + '/' + str(datetime.datetime.now().day)
 
-        self.screen = pg.display.set_mode((pg.display.get_desktop_sizes()[0][1] - 70, pg.display.get_desktop_sizes()[0][1] -70), pg.RESIZABLE, vsync=1)
+        self.screen = pg.display.set_mode((pg.display.get_desktop_sizes()[0][1] - 70, pg.display.get_desktop_sizes()[0][1] - 70), pg.RESIZABLE, vsync=1)
+        # self.settings = Settings(self.screen, (pg.display.get_desktop_sizes()[0][1] - 70, pg.display.get_desktop_sizes()[0][1] - 70))
+        self.settings = SettingsMenu(title='Settings', width=pg.display.get_desktop_sizes()[0][1] - 70, height=pg.display.get_desktop_sizes()[0][1] - 70,surface=self.screen, parent=self, theme=pm.themes.THEME_DARK)
         # "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        self.piece_type = 'chessmonk'
+        self.board_style = 'marble.png'
         self.board, self.turn, self.castle_rights, self.en_passant_square, self.halfmoves_since_last_capture, self.fullmove_number = parse_FEN(
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
         self.game_fens = ['rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1']
         self.black_pieces = pg.sprite.Group()
         self.white_pieces = pg.sprite.Group()
         self.all_pieces = pg.sprite.Group()
+
         self.map = []
         for i, row in enumerate(self.board):
             for j, piece in enumerate(row):
-                try:
+                if piece != ' ':
                     self.all_pieces.add(piece)
                     if piece.colour == 'black':
                         self.black_pieces.add(piece)
                     else:
                         self.white_pieces.add(piece)
-                except:
-                    pass
+
         self.size = int((pg.display.get_window_size()[1] - 200) / 8)
         self.default_size = int(pg.display.get_window_size()[1] - 200 / 8)
-        self.font = pg.font.SysFont('arial', 30)
+        self.font = pg.font.SysFont('segoescript', 30)
         self.updates = False
         self.arrow_colour = (252, 177, 3)
         self.colours = [(118, 150, 86), (238, 238, 210)]
@@ -113,11 +120,11 @@ class Engine:
         self.tyr = None
         self.left = False
         self.background = pg.image.load('data/img/background_dark.png').convert()
-        self.background = pg.transform.scale(self.background,
-                                             (pg.display.get_window_size()[0], pg.display.get_window_size()[1]))
-        self.board_background = pg.image.load('data/img/boards/marble.png').convert()
-        self.board_background = pg.transform.scale(self.board_background,
-                                                   (self.size * 8, self.size * 8))
+        self.background = pg.transform.smoothscale(self.background,
+                                                   (pg.display.get_window_size()[0], pg.display.get_window_size()[1]))
+        self.board_background = pg.image.load('data/img/boards/' + self.board_style).convert()
+        self.board_background = pg.transform.smoothscale(self.board_background,
+                                                         (self.size * 8, self.size * 8))
         self.offset = [pg.display.get_window_size()[0] / 2 - 4 * self.size,
                        pg.display.get_window_size()[1] / 2 - 4 * self.size]
         self.update_board()
@@ -130,6 +137,7 @@ class Engine:
             self.get_eval()
         self.clock = pg.time.Clock()
 
+
     def run(self):
         self.draw_board()
         if self.updates:
@@ -139,7 +147,7 @@ class Engine:
             if piece.clicked:
                 piece_active = piece
                 break
-        if piece_active != None:
+        if piece_active is not None:
             self.draw_pieces(piece_active)
         else:
             self.draw_pieces()
@@ -168,7 +176,7 @@ class Engine:
                     elif len(self.game_fens) == 1:
                         self.undo_move(True)
                         self.un_click_right(False)
-                elif event.button == 3 and self.left == False:
+                elif event.button == 3 and not self.left:
                     self.un_click_right(True)
                 elif event.button == 3:
                     self.updates_kill()
@@ -186,13 +194,16 @@ class Engine:
                     elif len(self.game_fens) == 1:
                         self.undo_move(True)
                         self.un_click_right(False)
+                if event.key == pg.K_ESCAPE:
+                    self.settings.run()
             elif event.type == pg.VIDEORESIZE:
                 # There's some code to add back window content here.
                 self.screen = pg.display.set_mode((event.w, event.h), pg.RESIZABLE, vsync=1)
+                self.settings = SettingsMenu(title='Settings', width=event.w, height=event.h, surface=self.screen, parent=self, theme=pm.themes.THEME_DARK)
                 self.background = pg.image.load('data/img/background_dark.png').convert()
-                self.background = pg.transform.scale(self.background,
-                                                     (pg.display.get_window_size()[0], pg.display.get_window_size()[1]))
-                self.board_background = pg.image.load('data/img/boards/marble.png').convert()
+                self.background = pg.transform.smoothscale(self.background,
+                                                           (pg.display.get_window_size()[0], pg.display.get_window_size()[1]))
+                self.board_background = pg.image.load('data/img/boards/' + self.board_style).convert()
                 if self.default_size >= pg.display.get_window_size()[1] or self.default_size >= pg.display.get_window_size()[0]:
                     self.show_numbers = False
                     if pg.display.get_window_size()[0] < pg.display.get_window_size()[1]:
@@ -209,15 +220,15 @@ class Engine:
                     self.show_numbers = True
                 if self.size <= 1:
                     self.size = 1
-                self.board_background = pg.transform.scale(self.board_background,
-                                                           (self.size * 8, self.size * 8))
+                self.board_background = pg.transform.smoothscale(self.board_background,
+                                                                 (self.size * 8, self.size * 8))
                 self.offset = [pg.display.get_window_size()[0] / 2 - 4 * self.size,
                                pg.display.get_window_size()[1] / 2 - 4 * self.size]
 
         if self.ai_vs_ai:
             self.un_click()
         pg.display.flip()
-        self.clock.tick(300)
+        self.clock.tick(1000)
 
     def get_eval(self):
         self.stockfish.set_depth(20)
@@ -229,7 +240,7 @@ class Engine:
         self.highlighted.clear()
         self.arrows.clear()
         if self.ai_vs_ai:
-            self.ai_make_move(0, 0, 0, 0)
+            self.ai_make_move(0, 0, 0)
             if EVAL_ON:
                 self.get_eval()
         else:
@@ -244,12 +255,10 @@ class Engine:
                                 if self.turn == 'w':
                                     self.turn = 'b'
                                     move = translate_move(row, col, y, x)
-                                    try:
+                                    if self.board[row][col] != ' ':
                                         if self.board[row][col].piece == 'P':
                                             if y == 0:
                                                 move += 'q'
-                                    except:
-                                        pass
                                     self.last_move.append(move)
                                     self.node = self.node.add_variation(chess.Move.from_uci(move))
                                 else:
@@ -257,50 +266,67 @@ class Engine:
                                     self.turn = 'w'
                                     if not self.player_vs_ai:
                                         move = translate_move(row, col, y, x)
-                                        try:
+                                        if self.board[row][col] != ' ':
                                             if self.board[row][col].piece == 'p':
                                                 if y == 7:
                                                     move += 'q'
-                                        except:
-                                            pass
+
                                         self.last_move.append(move)
                                         self.node = self.node.add_variation(chess.Move.from_uci(move))
 
                                 self.moved()
-                                try:
+                                if self.board[y][x] != ' ':
                                     self.board[y][x].clicked = False
-                                except:
-                                    pass
                                 if EVAL_ON:
                                     self.get_eval()
                                 if self.player_vs_ai:
-                                    self.ai_make_move(x, y, row, col)
+                                    self.ai_make_move(y, row, col)
                                     if EVAL_ON:
                                         self.get_eval()
                             else:
                                 self.board[row][col].clicked = False
                             break
 
-    def ai_make_move(self, x, y, row, col):
+    def change_pieces(self, piece_type):
+        self.piece_type = piece_type
+        for piece in self.all_pieces:
+            piece.change_type(piece_type)
+
+    def change_board(self, board_type):
+        self.board_style = board_type
+        self.board_background = pg.image.load('data/img/boards/' + self.board_style).convert()
+        self.board_background = pg.transform.smoothscale(self.board_background,
+                                                         (self.size * 8, self.size * 8))
+
+    def change_mode(self, mode):
+        if mode == 'pvp':
+            self.ai_vs_ai = False
+            self.player_vs_ai = False
+        elif mode == 'aivai':
+            self.ai_vs_ai = True
+            self.player_vs_ai = False
+        elif mode == 'pvai':
+            self.ai_vs_ai = False
+            self.player_vs_ai = True
+
+    def ai_make_move(self, y, row, col):
         # Engine Moves
         self.draw_board()
         self.draw_pieces()
         pg.display.flip()
         self.stockfish.set_fen_position(self.game_fens[-1])
         time.sleep(0.15)
-        move = self.move_strength()
-        if move != None:
+        move = self.move_strength(self.ai_strength)
+        if move is not None:
             self.last_move.append(move)
-            try:
-                if self.board[row][col].piece == 'p': # auto promote queen
+            if self.board[row][col] != ' ':
+                if self.board[row][col].piece == 'p':  # auto promote queen
                     if y == 7:
                         move += 'q'
-            except:
-                pass
             self.node = self.node.add_variation(chess.Move.from_uci(move))
             self.engine_make_move(move) # Making the move
 
-    def move_strength(self):
+    def move_strength(self, strength):
         # return moves[0]["Move"]
         if self.ai_vs_ai:
             if self.turn == 'w':
@@ -310,9 +336,12 @@ class Engine:
                 # self.stockfish.set_skill_level(1)
                 a = 150
         else:
-            a = random.randint(1, 5)
+            a = random.randint(1+strength*2, 5+strength*2)
         move = self.stockfish.get_best_move_time(a)
         return move
+
+    def change_ai_strength(self, num):
+        self.ai_strength = num
 
     def un_click_right(self, right_click):
         txr = int((pg.mouse.get_pos()[0] - self.offset[0]) // self.size)
@@ -645,7 +674,7 @@ class Engine:
     def promotion(self, piece):
         self.all_pieces.remove(piece)
         self.board[piece.position[0]][piece.position[1]] = Queen(position=(piece.position[0], piece.position[1]),
-                                                                 colour=piece.colour)
+                                                                 colour=piece.colour, piece_type=self.piece_type)
         self.all_pieces.add(self.board[piece.position[0]][piece.position[1]])
         if piece.colour == 'black':
             self.black_pieces.remove(piece)
@@ -774,6 +803,8 @@ class Engine:
                 self.screen.blit(surface, (self.offset[0] + self.size/2 - 5 + self.size * i,
                                            self.offset[
                                                1] + 17 * self.size / 2  - 25))  # draw letters + numbers
+            surface = self.font.render('Settings = esc', False, (255, 255, 255))
+            self.screen.blit(surface, (20, 20))
 
     def draw_pieces(self, piece_selected=None):
         for piece in self.all_pieces:
@@ -795,67 +826,3 @@ class Engine:
                          (off[0] + self.size * end[1], off[1] + self.size * end[0]), 10)
             self.screen.blit(surface, (0, 0))
 
-    def moved2(self):
-        eps_moved_made = False
-        for i, row in enumerate(self.board):
-            for j, piece in enumerate(row):
-                if piece != ' ':
-                    if piece.position != (i, j):
-                        # piece no longer on the square of the board
-                        self.board[i][j] = ' '
-
-                        # has a pawn moved 2 squares. en-passant check
-                        if piece.piece.lower() == 'p' and piece.position[0] - i == 2 * piece.direction:
-                            self.en_passant_square = str(
-                                (piece.position[0] + int((piece.position[0] - i) / 2), piece.position[1]))
-                        else:
-                            self.en_passant_square = '-'
-
-                        # has a pawn been captured with enpassant
-                        if piece.piece.lower() == 'p':
-                            if piece.position[0] - i == piece.direction and (
-                                    piece.position[1] - j == 1 or piece.position[1] - j == -1):
-                                if self.board[piece.position[0]][piece.position[1]] == ' ':
-                                    eps_moved_made = True
-                                    self.board[piece.position[0] - piece.direction][piece.position[1]].dead = True
-                                    self.board[piece.position[0] - piece.direction][piece.position[1]] = ' '
-
-                        # king has castled
-                        castle = False
-                        if piece.piece.lower() == 'k':
-                            if piece.position[1] - j == 2 or piece.position[1] - j == -2:
-                                castle = True
-                                if piece.position[1] < 4:
-                                    self.board[piece.position[0]][3] = self.board[piece.position[0]][0]
-                                    self.board[piece.position[0]][0] = ' '
-                                    self.board[piece.position[0]][3].position = (piece.position[0], 3)
-                                else:
-                                    self.board[piece.position[0]][5] = self.board[piece.position[0]][7]
-                                    self.board[piece.position[0]][7] = ' '
-                                    self.board[piece.position[0]][5].position = (piece.position[0], 5)
-
-                        piece_sound = self.board[piece.position[0]][piece.position[1]]
-
-                        # update the board
-                        if self.board[piece.position[0]][piece.position[1]] != ' ':
-                            self.board[piece.position[0]][piece.position[1]].dead = True
-                        self.board[piece.position[0]][piece.position[1]] = piece
-
-                        # promotion
-                        if piece.piece.lower() == 'p':
-                            if piece.position[0] == int(3.5 + piece.direction * 3.5):
-                                self.promotion(piece)
-                        break
-
-        for p in self.black_pieces:
-            if p.dead:
-                self.black_pieces.remove(p)
-        for p in self.white_pieces:
-            if p.dead:
-                self.white_pieces.remove(p)
-        for p in self.all_pieces:
-            if p.dead:
-                self.all_pieces.remove(p)
-
-        self.game_fens.append(
-            create_FEN(self.board, self.turn, self.castle_rights, self.en_passant_square, self.fullmove_number))

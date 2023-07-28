@@ -149,15 +149,25 @@ class Piece(sprite.Sprite):
 
     def draw(self, offset, screen, size):
         self.size = size
-        picture = pg.transform.scale(self.picture, (self.size, self.size))
+        if self.picture.get_size() != (self.size, self.size):
+            self.picture = pg.image.load(
+                "data/img/pieces/" + self.piece_set + "/" + self.colour[0] + self.piece.lower() + ".png").convert_alpha()
+            self.picture = pg.transform.smoothscale(self.picture, (self.size, self.size))
         if self.clicked:
-            screen.blit(picture,
+            screen.blit(self.picture,
                         (pg.mouse.get_pos()[0] - self.size / 2 ,
                          pg.mouse.get_pos()[1] - self.size / 2)
                         )
         else:
-            screen.blit(picture,
+            screen.blit(self.picture,
                         (offset[0] + self.size * self.position[1], offset[1] + self.size * self.position[0]))
+
+    def change_type(self, piece_type):
+        self.piece_set = piece_type
+        self.picture = pg.image.load(
+            "data/img/pieces/" + self.piece_set + "/" + self.colour[0] + self.piece.lower() + ".png").convert_alpha()
+        self.picture = pg.transform.smoothscale(self.picture, (self.size, self.size))
+
 
     def __del__(self):
         self.dead = True
