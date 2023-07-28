@@ -207,7 +207,7 @@ class Engine:
             elif event.type == pg.VIDEORESIZE:
                 # There's some code to add back window content here.
                 self.screen = pg.display.set_mode((event.w, event.h), pg.RESIZABLE, vsync=1)
-                self.settings = SettingsMenu(title='Settings', width=event.w, height=event.h, surface=self.screen, parent=self, piece_type=self.piece_type, strength=self.ai_strength, style=self.board_style, mode=self.mode, theme=pm.themes.THEME_DARK)
+                self.settings = SettingsMenu(title='Settings', width=self.screen.get_width(), height=self.screen.get_height(), surface=self.screen, parent=self, piece_type=self.piece_type, strength=self.ai_strength, style=self.board_style, mode=self.mode, theme=pm.themes.THEME_DARK)
                 self.background = pg.image.load('data/img/background_dark.png').convert()
                 self.background = pg.transform.smoothscale(self.background,
                                                            (pg.display.get_window_size()[0], pg.display.get_window_size()[1]))
