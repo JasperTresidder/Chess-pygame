@@ -41,6 +41,7 @@ class Engine:
             self.mode = 'pvp'
         self.game_just_ended = False
         pg.init()
+        pg.display.set_caption('Chess', 'chess')
         pg.font.init()
         self.last_move = []
         self.highlighted = []
@@ -94,7 +95,8 @@ class Engine:
         # self.settings = Settings(self.screen, (pg.display.get_desktop_sizes()[0][1] - 70, pg.display.get_desktop_sizes()[0][1] - 70))
         self.settings = SettingsMenu(title='Settings', width=self.screen.get_width(), height=self.screen.get_height(),surface=self.screen, parent=self, piece_type=self.piece_type, strength=self.ai_strength, style=self.board_style, mode=self.mode, theme=pm.themes.THEME_DARK)
         # "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-
+        icon = pg.image.load('data/img/pieces/cardinal/bk.png').convert_alpha()
+        pg.display.set_icon(icon)
         self.board, self.turn, self.castle_rights, self.en_passant_square, self.halfmoves_since_last_capture, self.fullmove_number = parse_FEN(
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
         self.game_fens = ['rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1']
@@ -144,7 +146,6 @@ class Engine:
         if EVAL_ON:
             self.get_eval()
         self.clock = pg.time.Clock()
-
 
     def run(self):
         self.draw_board()

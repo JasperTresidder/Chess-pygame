@@ -25,13 +25,9 @@ import timeit
 
 from src.engine.engine import Engine
 
-# SET FALSE FOR PLAYER VS PLAYER !!
-PLAYER_vs_AI = True
-AI_vs_AI = False
-
 # All games are saved to data/games/ as a pgn file.
 
 if __name__ == '__main__':
-    engine = Engine(PLAYER_vs_AI, AI_vs_AI)
+    engine = Engine(True, False)
     while 1:
         engine.run()
