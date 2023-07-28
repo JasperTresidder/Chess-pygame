@@ -1,4 +1,3 @@
-from pprint import pprint
 from src.pieces.rook import Rook
 from src.pieces.bishop import Bishop
 from src.pieces.queen import Queen
@@ -15,7 +14,7 @@ def create_FEN(board, turn, castle_rights, en_p_s, fmn):
         blanks = 0
         for col in range(8):
             if board[row][col] == ' ':
-                blanks+=1
+                blanks += 1
             else:
                 if blanks > 0:
                     fen_string += str(blanks)
@@ -38,6 +37,7 @@ def create_FEN(board, turn, castle_rights, en_p_s, fmn):
     fen_string += str(fmn)
     return fen_string
 
+
 def take_one(moves: str):
     move_array = moves.split(' ')
     if move_array[-2][1] == '.':
@@ -50,11 +50,14 @@ def take_one(moves: str):
     print(move)
     return move
 
-def square_on(number):
-    return tuple((7-(int(number[1])-1), int(board_letters.index(number[0]))))
 
-def translate_move(r,c,x,y):
-    return board_letters[c] + str(8-r) + board_letters[y] + str(8-x)
+def square_on(number):
+    return tuple((7 - (int(number[1]) - 1), int(board_letters.index(number[0]))))
+
+
+def translate_move(r, c, x, y):
+    return board_letters[c] + str(8 - r) + board_letters[y] + str(8 - x)
+
 
 def FEN_to_board(fen_string):
     board = [[] for i in range(8)]
@@ -67,7 +70,7 @@ def FEN_to_board(fen_string):
                     board[i].append(' ')
             else:
                 board[i].append(char)
-    #board.reverse()
+    # board.reverse()
     return board
 
 
@@ -75,7 +78,6 @@ def parse_FEN(fen_string):
     board = [[] for i in range(8)]
     fen_list = fen_string.split(' ')
     piece_placement_list = fen_list[0].split('/')
-
 
     for i, row in enumerate(piece_placement_list):
         count = 0
@@ -86,7 +88,7 @@ def parse_FEN(fen_string):
                     board[i].append(' ')
             else:
                 match char:
-                    case'r':
+                    case 'r':
                         board[i].append(Rook(position=(i, count), colour='black'))
                     case 'R':
                         board[i].append(Rook(position=(i, count), colour='white'))
@@ -115,7 +117,8 @@ def parse_FEN(fen_string):
                             k = True
                         if 'q' in fen_list[2]:
                             q = True
-                        board[i].append(King(position=(i, count), colour='black', castling_rights=dict(king=k, queen=q)))
+                        board[i].append(
+                            King(position=(i, count), colour='black', castling_rights=dict(king=k, queen=q)))
 
                     case 'K':
                         k = False
@@ -124,14 +127,14 @@ def parse_FEN(fen_string):
                             k = True
                         if 'Q' in fen_list[2]:
                             q = True
-                        board[i].append(King(position=(i, count), colour='white', castling_rights=dict(king=k, queen=q)))
+                        board[i].append(
+                            King(position=(i, count), colour='white', castling_rights=dict(king=k, queen=q)))
                     case 'q':
                         board[i].append(Queen(position=(i, count), colour='black'))
                     case 'Q':
                         board[i].append(Queen(position=(i, count), colour='white'))
 
                 count += 1
-
 
     turn = fen_list[1]
 
@@ -147,7 +150,6 @@ def parse_FEN(fen_string):
             en_passant_square = str((int(en_passant_square[1]), int(board_letters.index(en_passant_square[0]))))
 
     halfmoves_since_last_capture = int(fen_list[4])
-
 
     fullmove_number = int(fen_list[5])
 

@@ -87,7 +87,6 @@ class Engine:
         self.board_style = 'marble.png'
 
         self.screen = pg.display.set_mode((pg.display.get_desktop_sizes()[0][1] - 70, pg.display.get_desktop_sizes()[0][1] - 70), pg.RESIZABLE, vsync=1)
-        # self.settings = Settings(self.screen, (pg.display.get_desktop_sizes()[0][1] - 70, pg.display.get_desktop_sizes()[0][1] - 70))
         self.settings = SettingsMenu(title='Settings', width=self.screen.get_width(), height=self.screen.get_height(),surface=self.screen, parent=self, theme=pm.themes.THEME_DARK)
         # "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
         icon = pg.image.load('data/img/pieces/cardinal/bk.png').convert_alpha()

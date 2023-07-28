@@ -17,11 +17,17 @@ class SettingsMenu(pm.menu.Menu):
             ('Cardinal', 'cardinal'),
             ('Chessicons', 'chessicons'),
             ('Chessmonk', 'chessmonk'),
+            ('Dubrovny', 'dubrovny'),
             ('Gioco', 'gioco'),
             ('Horsey', 'horsey'),
             ('Kosal', 'kosal'),
             ('Maya', 'maya'),
+            ('Metaltops', 'metaltops'),
+            ('Pirouetti', 'pirouetti'),
+            ('Regular', 'regular'),
             ('Riohacha', 'riohacha'),
+            ('Staunty', 'staunty'),
+            ('Tatiana', 'tatiana'),
         ]
 
         self.ai_strength = [
