@@ -21,24 +21,19 @@ EVAL_ON = False
 
 def print_eval(evaluation):
     if evaluation["type"] == "cp":
-        print('Evaluation = ', evaluation["value"])
+        return 'Evaluation = ' + str(round(evaluation["value"]/100, 2))
     else:
         if evaluation["value"] < 0:
-            print('Mate in ', -evaluation["value"])
+            return 'Mate in '+ str(-evaluation["value"])
         else:
-            print('Mate in ', evaluation["value"])
+            return 'Mate in ' + str(evaluation["value"])
 
 
 class Engine:
     def __init__(self, player_vs_ai: bool, ai_vs_ai: bool):
         self.player_vs_ai = player_vs_ai
         self.ai_vs_ai = ai_vs_ai
-        if self.player_vs_ai:
-            self.mode = 'pvai'
-        elif self.ai_vs_ai:
-            self.mode = 'aivai'
-        else:
-            self.mode = 'pvp'
+        self.evaluation = ''
         self.game_just_ended = False
         pg.init()
         pg.display.set_caption('Chess', 'chess')
@@ -93,7 +88,7 @@ class Engine:
 
         self.screen = pg.display.set_mode((pg.display.get_desktop_sizes()[0][1] - 70, pg.display.get_desktop_sizes()[0][1] - 70), pg.RESIZABLE, vsync=1)
         # self.settings = Settings(self.screen, (pg.display.get_desktop_sizes()[0][1] - 70, pg.display.get_desktop_sizes()[0][1] - 70))
-        self.settings = SettingsMenu(title='Settings', width=self.screen.get_width(), height=self.screen.get_height(),surface=self.screen, parent=self, piece_type=self.piece_type, strength=self.ai_strength, style=self.board_style, mode=self.mode, theme=pm.themes.THEME_DARK)
+        self.settings = SettingsMenu(title='Settings', width=self.screen.get_width(), height=self.screen.get_height(),surface=self.screen, parent=self, theme=pm.themes.THEME_DARK)
         # "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
         icon = pg.image.load('data/img/pieces/cardinal/bk.png').convert_alpha()
         pg.display.set_icon(icon)
@@ -146,7 +141,7 @@ class Engine:
         if EVAL_ON:
             self.get_eval()
         self.clock = pg.time.Clock()
-
+        self.settings.confirm()
     def run(self):
         self.draw_board()
         if self.updates:
@@ -196,6 +191,8 @@ class Engine:
                     self.end_game()
                 if event.key == pg.K_f and pg.key.get_mods() & pg.KMOD_CTRL:
                     print(self.game_fens[-1])
+                if event.key == pg.K_e and pg.key.get_mods() & pg.KMOD_CTRL:
+                    self.evaluation = self.get_eval()
                 if event.key == pg.K_u:
                     if len(self.game_fens) > 1:
                         self.undo_move(False)
@@ -208,7 +205,7 @@ class Engine:
             elif event.type == pg.VIDEORESIZE:
                 # There's some code to add back window content here.
                 self.screen = pg.display.set_mode((event.w, event.h), pg.RESIZABLE, vsync=1)
-                self.settings = SettingsMenu(title='Settings', width=self.screen.get_width(), height=self.screen.get_height(), surface=self.screen, parent=self, piece_type=self.piece_type, strength=self.ai_strength, style=self.board_style, mode=self.mode, theme=pm.themes.THEME_DARK)
+                self.settings.resize_event()
                 self.background = pg.image.load('data/img/background_dark.png').convert()
                 self.background = pg.transform.smoothscale(self.background,
                                                            (pg.display.get_window_size()[0], pg.display.get_window_size()[1]))
@@ -241,8 +238,9 @@ class Engine:
 
     def get_eval(self):
         self.stockfish.set_depth(20)
-        print_eval(self.stockfish.get_evaluation())
+        eve = print_eval(self.stockfish.get_evaluation())
         self.stockfish.set_depth(99)
+        return eve
 
     # @timeit
     def un_click(self):
@@ -309,8 +307,6 @@ class Engine:
 
     def check_resize(self):
         self.screen = pg.display.set_mode((self.screen.get_width(), self.screen.get_height()), pg.RESIZABLE, vsync=1)
-        self.settings = SettingsMenu(title='Settings', width=self.screen.get_width(), height=self.screen.get_height(), surface=self.screen, parent=self,
-                                     piece_type=self.piece_type, strength=self.ai_strength,  style=self.board_style, mode=self.mode, theme=pm.themes.THEME_DARK)
         self.background = pg.image.load('data/img/background_dark.png').convert()
         self.background = pg.transform.smoothscale(self.background,
                                                    (pg.display.get_window_size()[0], pg.display.get_window_size()[1]))
@@ -337,9 +333,7 @@ class Engine:
         self.offset = [pg.display.get_window_size()[0] / 2 - 4 * self.size,
                        pg.display.get_window_size()[1] / 2 - 4 * self.size]
 
-
     def change_mode(self, mode):
-        self.mode = mode
         if mode == 'pvp':
             self.ai_vs_ai = False
             self.player_vs_ai = False
@@ -377,12 +371,13 @@ class Engine:
                 # self.stockfish.set_skill_level(1)
                 a = 15*(strength+1)
         else:
-            a = random.randint((1+strength), (5+strength))
+            a = random.randint(2, 5)
         move = self.stockfish.get_best_move_time(a)
         return move
 
     def change_ai_strength(self, num):
         self.ai_strength = num
+        self.stockfish.set_skill_level(num)
 
     def un_click_right(self, right_click):
         txr = int((pg.mouse.get_pos()[0] - self.offset[0]) // self.size)
@@ -837,18 +832,21 @@ class Engine:
         # draw letters + numbers
         if self.show_numbers:
             for i in range(8):
-                letter = 8 - i
-                surface = self.font.render(str(letter), False, (255, 255, 255))
+                number = 8 - i
+                surface = self.font.render(str(number), False, (255, 255, 255))
                 self.screen.blit(surface, (self.offset[0] - self.size / 2,
-                                           self.offset[1] + self.size / 2 + self.size * i - 13))  # draw letters + numbers
+                                           self.offset[1] + self.size / 2 + self.size * i - 13))  # draw numbers
             for i in range(8):
                 letter = board_letters[i]
                 surface = self.font.render(str(letter), False, (255, 255, 255))
-                self.screen.blit(surface, (self.offset[0] + self.size/2 - 5 + self.size * i,
+                self.screen.blit(surface, (self.offset[0] + self.size/2 - 8 + self.size * i,
                                            self.offset[
-                                               1] + 17 * self.size / 2  - 25))  # draw letters + numbers
+                                               1] + 17 * self.size / 2  - 25))  # draw letters
             surface = self.font.render('Settings = esc', False, (255, 255, 255))
             self.screen.blit(surface, (20, 20))
+            if self.evaluation != '':
+                surface = self.font.render(self.evaluation, False, (255, 255, 255))
+                self.screen.blit(surface, (self.screen.get_width()/2, 20))
 
     def draw_pieces(self, piece_selected=None):
         for piece in self.all_pieces:

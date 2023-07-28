@@ -1,7 +1,7 @@
 import pygame_menu as pm
 
 class SettingsMenu(pm.menu.Menu):
-    def __init__(self, surface, parent, piece_type, strength, style, mode,  *args, **kwargs):
+    def __init__(self, surface, parent,  *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.screen = surface
         self.o_size = self.screen.get_size()
@@ -24,12 +24,6 @@ class SettingsMenu(pm.menu.Menu):
             ('Riohacha', 'riohacha'),
         ]
 
-        # Resize event creates new settings instance
-        index = 0
-        for i, j in enumerate(self.pieces):
-            if j[0] == piece_type.capitalize():
-                index = i
-
         self.ai_strength = [
             ('0', 0),
             ('1', 1),
@@ -42,6 +36,16 @@ class SettingsMenu(pm.menu.Menu):
             ('8', 8),
             ('9', 9),
             ('10', 10),
+            ('11', 11),
+            ('12', 12),
+            ('13', 13),
+            ('14', 14),
+            ('15', 15),
+            ('16', 16),
+            ('17', 17),
+            ('18', 18),
+            ('19', 19),
+            ('20', 20),
         ]
         self.board_background = [
             ('Cherry', 'cherry_800x.jpg'),
@@ -50,40 +54,34 @@ class SettingsMenu(pm.menu.Menu):
             ('Marble', 'marble.png'),
             ('Sand', 'sand.jpg'),
         ]
-        style_i = 0
-        for i, j in enumerate(self.board_background):
-            if j[1] == style:
-                style_i = i
 
         self.modes = [
             ('Player vs AI', 'pvai'),
             ('Player vs Player', 'pvp'),
             ('AI vs AI', 'aivai'),
         ]
-        mode_i = 0
-        for i, j in enumerate(self.modes):
-            if j[1] == mode:
-                mode_i = i
 
+        file = open('data/settings/settings.txt', 'r')
+        lines = file.readlines()
         self.label1 = self.add.label('Game Mode')
-        self.mode = self.add.dropselect('', self.modes, mode_i, selection_box_width=350,
+        self.mode = self.add.dropselect('', self.modes, int(lines[0].replace('\n', '')), selection_box_width=350,
                                             selection_option_font_size=None, placeholder='Select Mode',
                                             selection_box_height=6)
 
         self.label2 = self.add.label('Pieces:')
-        self.piece = self.add.dropselect('', self.pieces, index, selection_box_width=350, selection_option_font_size=None, placeholder='Select Piece Type', selection_box_height=6)
+        self.piece = self.add.dropselect('', self.pieces, int(lines[1].replace('\n', '')), selection_box_width=350, selection_option_font_size=None, placeholder='Select Piece Type', selection_box_height=6)
 
         self.label3 = self.add.label('Board Style')
-        self.board = self.add.dropselect('', self.board_background, style_i, selection_box_width=350,
+        self.board = self.add.dropselect('', self.board_background, int(lines[2].replace('\n', '')), selection_box_width=350,
                                             selection_option_font_size=None, placeholder='Select Board Style',
                                             selection_box_height=6)
 
         self.label4 = self.add.label('AI Strength')
-        self.strength = self.add.dropselect('', self.ai_strength, strength, selection_box_width=350, selection_option_font_size=None, placeholder='Select Strength', selection_box_height=6)
+        self.strength = self.add.dropselect('', self.ai_strength, int(lines[3].replace('\n', '')), selection_box_width=350, selection_option_font_size=None, placeholder='Select Strength', selection_box_height=6)
 
         self.confirms = self.add.button('Confirm', self.confirm, accept_kwargs=True, font_shadow=True,
                         font_shadow_color=(100, 100, 100), font_background_color=(0, 200, 0), cursor=11, font_color=(0,0,0))
-        self.text = self.add.label('Undo - U\nSave and reset - Ctrl + S\nPrint game FEN position - Ctrl + F', font_size=20, border_color=(150,150,150), border_width=3)
+        self.text = self.add.label('Undo - U\nSave and reset - Ctrl + S\nPrint game FEN position - Ctrl + F\nGet current evaluation - Crtl + E', font_size=20, border_color=(150,150,150), border_width=3)
         self.resized = False
 
     def run(self):
@@ -103,7 +101,15 @@ class SettingsMenu(pm.menu.Menu):
         self.parent.change_mode(self.mode.get_value()[0][1])
         self.parent.change_board(self.board.get_value()[0][1])
         self.parent.change_ai_strength(self.strength.get_value()[0][1])
+        with open('data/settings/settings.txt', 'w') as file:
+            file.writelines(str(self.mode.get_index())+'\n')
+            file.writelines(str(self.piece.get_index())+'\n')
+            file.writelines(str(self.board.get_index())+'\n')
+            file.writelines(str(self.strength.get_index())+'\n')
+        self.mode.get_index()
         self.exit_menu()
+
+
 
     def exit_menu(self):
         self.disable()
