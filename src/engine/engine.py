@@ -81,12 +81,14 @@ class Engine:
         self.game.headers["Date"] = str(datetime.datetime.now().year) + '/' + str(
             datetime.datetime.now().month) + '/' + str(datetime.datetime.now().day)
 
-        self.screen = pg.display.set_mode((pg.display.get_desktop_sizes()[0][1] - 70, pg.display.get_desktop_sizes()[0][1] - 70), pg.RESIZABLE, vsync=1)
-        # self.settings = Settings(self.screen, (pg.display.get_desktop_sizes()[0][1] - 70, pg.display.get_desktop_sizes()[0][1] - 70))
-        self.settings = SettingsMenu(title='Settings', width=pg.display.get_desktop_sizes()[0][1] - 70, height=pg.display.get_desktop_sizes()[0][1] - 70,surface=self.screen, parent=self, theme=pm.themes.THEME_DARK)
-        # "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
         self.piece_type = 'chessmonk'
         self.board_style = 'marble.png'
+
+        self.screen = pg.display.set_mode((pg.display.get_desktop_sizes()[0][1] - 70, pg.display.get_desktop_sizes()[0][1] - 70), pg.RESIZABLE, vsync=1)
+        # self.settings = Settings(self.screen, (pg.display.get_desktop_sizes()[0][1] - 70, pg.display.get_desktop_sizes()[0][1] - 70))
+        self.settings = SettingsMenu(title='Settings', width=pg.display.get_desktop_sizes()[0][1] - 70, height=pg.display.get_desktop_sizes()[0][1] - 70,surface=self.screen, parent=self, piece_type=self.piece_type, strength=self.ai_strength, style=self.board_style, theme=pm.themes.THEME_DARK)
+        # "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+
         self.board, self.turn, self.castle_rights, self.en_passant_square, self.halfmoves_since_last_capture, self.fullmove_number = parse_FEN(
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
         self.game_fens = ['rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1']
@@ -199,7 +201,7 @@ class Engine:
             elif event.type == pg.VIDEORESIZE:
                 # There's some code to add back window content here.
                 self.screen = pg.display.set_mode((event.w, event.h), pg.RESIZABLE, vsync=1)
-                self.settings = SettingsMenu(title='Settings', width=event.w, height=event.h, surface=self.screen, parent=self, theme=pm.themes.THEME_DARK)
+                self.settings = SettingsMenu(title='Settings', width=event.w, height=event.h, surface=self.screen, parent=self, piece_type=self.piece_type, strength=self.ai_strength, style=self.board_style, theme=pm.themes.THEME_DARK)
                 self.background = pg.image.load('data/img/background_dark.png').convert()
                 self.background = pg.transform.smoothscale(self.background,
                                                            (pg.display.get_window_size()[0], pg.display.get_window_size()[1]))
@@ -298,6 +300,37 @@ class Engine:
         self.board_background = pg.transform.smoothscale(self.board_background,
                                                          (self.size * 8, self.size * 8))
 
+    def check_resize(self):
+        self.screen = pg.display.set_mode((self.screen.get_width(), self.screen.get_height()), pg.RESIZABLE, vsync=1)
+        self.settings = SettingsMenu(title='Settings', width=self.screen.get_width(), height=self.screen.get_height(), surface=self.screen, parent=self,
+                                     piece_type=self.piece_type, strength=self.ai_strength,  style=self.board_style, theme=pm.themes.THEME_DARK)
+        self.background = pg.image.load('data/img/background_dark.png').convert()
+        self.background = pg.transform.smoothscale(self.background,
+                                                   (pg.display.get_window_size()[0], pg.display.get_window_size()[1]))
+        self.board_background = pg.image.load('data/img/boards/' + self.board_style).convert()
+        if self.default_size >= pg.display.get_window_size()[1] or self.default_size >= pg.display.get_window_size()[0]:
+            self.show_numbers = False
+            if pg.display.get_window_size()[0] < pg.display.get_window_size()[1]:
+                self.size = int((pg.display.get_window_size()[0]) / 8)
+            else:
+                self.size = int((pg.display.get_window_size()[1]) / 8)
+        elif (self.default_size < pg.display.get_window_size()[1] < self.default_size + 200) or (
+                self.default_size < pg.display.get_window_size()[0] < self.default_size + 1000):
+            self.show_numbers = True
+            if pg.display.get_window_size()[0] < pg.display.get_window_size()[1]:
+                self.size = int((pg.display.get_window_size()[0] - 200) / 8)
+            else:
+                self.size = int((pg.display.get_window_size()[1] - 200) / 8)
+        else:
+            self.show_numbers = True
+        if self.size <= 1:
+            self.size = 1
+        self.board_background = pg.transform.smoothscale(self.board_background,
+                                                         (self.size * 8, self.size * 8))
+        self.offset = [pg.display.get_window_size()[0] / 2 - 4 * self.size,
+                       pg.display.get_window_size()[1] / 2 - 4 * self.size]
+
+
     def change_mode(self, mode):
         if mode == 'pvp':
             self.ai_vs_ai = False
@@ -331,12 +364,12 @@ class Engine:
         if self.ai_vs_ai:
             if self.turn == 'w':
                 # self.stockfish.set_skill_level(20)
-                a = 150
+                a = 15*(strength+1)
             else:
                 # self.stockfish.set_skill_level(1)
-                a = 150
+                a = 15*(strength+1)
         else:
-            a = random.randint(1+strength*2, 5+strength*2)
+            a = random.randint(strength*2, 5+strength*2)
         move = self.stockfish.get_best_move_time(a)
         return move
 
