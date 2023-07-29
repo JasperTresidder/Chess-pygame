@@ -1,17 +1,14 @@
 import pygame_menu as pm
 
+
 class SettingsMenu(pm.menu.Menu):
     def __init__(self, surface, parent,  *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.screen = surface
         self.o_size = self.screen.get_size()
         self.parent = parent
-        # try:
-        #     self.parent.change_pieces(piece_type)
-        # except:
-        #     pass
         self.add.button('Back', self.exit_menu, accept_kwargs=True, font_shadow=True,
-                        font_shadow_color=(100, 100, 100), font_background_color=(255, 0, 0), cursor=11, font_color=(0,0,0))
+                        font_shadow_color=(100, 100, 100), font_background_color=(255, 0, 0), cursor=11, font_color=(0, 0, 0))
         self.pieces = [
             ('Alpha', 'alpha'),
             ('Cardinal', 'cardinal'),
@@ -87,7 +84,7 @@ class SettingsMenu(pm.menu.Menu):
 
         self.confirms = self.add.button('Confirm', self.confirm, accept_kwargs=True, font_shadow=True,
                         font_shadow_color=(100, 100, 100), font_background_color=(0, 200, 0), cursor=11, font_color=(0,0,0))
-        self.text = self.add.label('Undo - U\nSave and reset - Ctrl + S\nPrint game FEN position - Ctrl + F\nGet current evaluation - Crtl + E', font_size=20, border_color=(150,150,150), border_width=3)
+        self.text = self.add.label('Undo - U\nSave and reset - Ctrl + S\nPrint game FEN position - Ctrl + F\nGet current evaluation - Crtl + E\nHint - Crtl + H', font_size=20, border_color=(150,150,150), border_width=3)
         self.resized = False
 
     def run(self):
@@ -114,7 +111,6 @@ class SettingsMenu(pm.menu.Menu):
             file.writelines(str(self.strength.get_index())+'\n')
         self.mode.get_index()
         self.exit_menu()
-
 
 
     def exit_menu(self):

@@ -29,12 +29,15 @@ def print_eval(evaluation):
             return 'Mate in ' + str(evaluation["value"])
 
 
+
 class Engine:
     def __init__(self, player_vs_ai: bool, ai_vs_ai: bool):
         self.player_vs_ai = player_vs_ai
         self.ai_vs_ai = ai_vs_ai
         self.evaluation = ''
+        self.best_move = ''
         self.game_just_ended = False
+        self.engine = 'stockfish'
         pg.init()
         pg.display.set_caption('Chess', 'chess')
         pg.font.init()
@@ -43,18 +46,18 @@ class Engine:
         self.arrows = []
         self.platform = None
         if 'Windows' in platform.platform():
-            self.platform = 'Windows/stockfish.exe'
+            self.platform = 'Windows/' + self.engine + '.exe'
         if 'macOS' in platform.platform():
             self.platform = 'macOS/stockfish'
-        print("lit/stockfish/" + self.platform)
+        print("lit/" + self.engine + "/" + self.platform)
         if self.ai_vs_ai:
-            self.stockfish = Stockfish("lit/stockfish/" + self.platform,
+            self.stockfish = Stockfish("lit/" + self.engine + "/" + self.platform,
                                        depth=99,
                                        parameters={"Threads": 6, "Minimum Thinking Time": 100, "Hash": 64,
                                                    "Skill Level": 20,
                                                    "UCI_Elo": 3000})
         else:
-            self.stockfish = Stockfish("lit/stockfish/" + self.platform,
+            self.stockfish = Stockfish("lit/" + self.engine + "/" + self.platform,
                                        depth=1,
                                        parameters={"Threads": 1, "Minimum Thinking Time": 1, "Hash": 2,
                                                    "Skill Level": 0.001,
@@ -192,6 +195,10 @@ class Engine:
                     print(self.game_fens[-1])
                 if event.key == pg.K_e and pg.key.get_mods() & pg.KMOD_CTRL:
                     self.evaluation = self.get_eval()
+                if event.key == pg.K_h and pg.key.get_mods() & pg.KMOD_CTRL:
+                    self.stockfish.set_skill_level(20)
+                    self.best_move = str(self.stockfish.get_best_move_time(200))
+                    self.stockfish.set_skill_level(self.ai_strength)
                 if event.key == pg.K_u:
                     if len(self.game_fens) > 1:
                         self.undo_move(False)
@@ -348,7 +355,6 @@ class Engine:
         self.draw_board()
         self.draw_pieces()
         pg.display.flip()
-        self.stockfish.set_fen_position(self.game_fens[-1])
         time.sleep(0.15)
         move = self.move_strength(self.ai_strength)
         if move is not None:
@@ -491,6 +497,7 @@ class Engine:
         # print FEN notation of position
         self.game_fens.append(
             create_FEN(self.board, self.turn, self.castle_rights, self.en_passant_square, self.fullmove_number))
+        self.stockfish.set_fen_position(self.game_fens[-1])
         # print(self.game_fens[-1])
         if self.node.board().is_repetition():
             print("DRAW BY REPETITION")
@@ -841,11 +848,15 @@ class Engine:
                 self.screen.blit(surface, (self.offset[0] + self.size/2 - 8 + self.size * i,
                                            self.offset[
                                                1] + 17 * self.size / 2  - 25))  # draw letters
-            surface = self.font.render('Settings = esc', False, (255, 255, 255))
+            surface = self.font.render('Settings = ESC', False, (255, 255, 255))
             self.screen.blit(surface, (20, 20))
             if self.evaluation != '':
                 surface = self.font.render(self.evaluation, False, (255, 255, 255))
-                self.screen.blit(surface, (self.screen.get_width()/2, 20))
+                self.screen.blit(surface, (self.screen.get_width()/2 - surface.get_width()/2, 20))
+
+            if self.best_move != '':
+                surface = self.font.render('Hint: ' + self.best_move, False, (255, 255, 255))
+                self.screen.blit(surface, (self.screen.get_width() - surface.get_width() - 10, 20))
 
     def draw_pieces(self, piece_selected=None):
         for piece in self.all_pieces:
