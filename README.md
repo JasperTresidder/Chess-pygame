@@ -30,9 +30,8 @@ MacOS/Unix:</h4>
 
 ## Important
 <div class="box">
-- If you are <b>NOT</b> on Windows or Mac you will have to <a href="https://stockfishchess.org/download/">install</a> your own version of Stockfish.<br>
-- Place the Stockfish application in the lit/stockfish_15.1_win_x64_avx2/ dictionary<br>
-- Then change the reference to this path in the __init__ of engine.py (line 42 & 48) located in the src dictionary. 
+- You may have to <a href="https://stockfishchess.org/download/">install</a> your own version of Stockfish.<br>
+- Place the Stockfish application in the lit/stockfish/{your_platform}/ dictionary. and rename the application to 'stockfish'<br>
 </div>
 
 ### TODO
