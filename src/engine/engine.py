@@ -355,7 +355,7 @@ class Engine:
         self.draw_board()
         self.draw_pieces()
         pg.display.flip()
-        time.sleep(0.15)
+        #time.sleep(0.15)
         move = self.move_strength(self.ai_strength)
         if move is not None:
             self.last_move.append(move)
@@ -499,6 +499,7 @@ class Engine:
             create_FEN(self.board, self.turn, self.castle_rights, self.en_passant_square, self.fullmove_number))
         self.stockfish.set_fen_position(self.game_fens[-1])
         # print(self.game_fens[-1])
+
         if self.node.board().is_repetition():
             print("DRAW BY REPETITION")
             pg.mixer.music.load('data/sounds/mate.wav')
@@ -506,21 +507,21 @@ class Engine:
             time.sleep(0.15)
             pg.mixer.music.play(1)
             self.end_game()
-        if self.node.board().is_stalemate():
+        elif self.node.board().is_stalemate():
             print("STALEMATE")
             pg.mixer.music.load('data/sounds/mate.wav')
             pg.mixer.music.play(1)
             time.sleep(0.15)
             pg.mixer.music.play(1)
             self.end_game()
-        if self.node.board().is_insufficient_material():
+        elif self.node.board().is_insufficient_material():
             print("INSUFFICIENT MATERIAL")
             pg.mixer.music.load('data/sounds/mate.wav')
             pg.mixer.music.play(1)
             time.sleep(0.15)
             pg.mixer.music.play(1)
             self.end_game()
-        if self.node.board().is_checkmate() or legal_moves == 0:
+        elif self.node.board().is_checkmate() or legal_moves == 0:
             if self.node.board().outcome().winner:
                 print("CHECKMATE WHITE WINS !!")
             else:
@@ -588,8 +589,8 @@ class Engine:
 
         self.game.headers["WhiteElo"] = "?"
         self.game.headers["BlackElo"] = "?"
-
         self.node = self.game
+        self.stockfish.set_fen_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
         self.update_board()
         self.update_legal_moves()
 
