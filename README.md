@@ -39,7 +39,9 @@ MacOS/Unix:</h4>
 - Ability to play vs AI as black
 - Load games
 - Click through moves using arrow keys.
-
+![image](https://github.com/JasperTresidder/Chess-pygame/assets/51917264/b01feef1-62ac-49de-9bff-b3eea429fd1f)
+![image](https://github.com/JasperTresidder/Chess-pygame/assets/51917264/348d3928-b7d3-4dab-9e20-09cacebfde73)
+![image](https://github.com/JasperTresidder/Chess-pygame/assets/51917264/8e7ea6f8-6f18-4259-afa7-c802e682975b)
 ![image](https://github.com/JasperTresidder/Chess-pygame/assets/51917264/0259b5f8-c75a-4eda-8815-89f93b4d6c47)
 
 
