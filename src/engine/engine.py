@@ -405,6 +405,9 @@ class Engine:
     def un_click_right(self, right_click):
         txr = int((pg.mouse.get_pos()[0] - self.offset[0]) // self.size)
         tyr = int((pg.mouse.get_pos()[1] - self.offset[1]) // self.size)
+        if self.flipped:
+            txr = 7 - txr
+            tyr = 7 - tyr
         if right_click:
             if self.txr == txr and self.tyr == tyr:
                 if (tyr, txr) in self.highlighted:
@@ -804,6 +807,9 @@ class Engine:
     def click_right(self):
         self.txr = int((pg.mouse.get_pos()[0] - self.offset[0]) // self.size)
         self.tyr = int((pg.mouse.get_pos()[1] - self.offset[1]) // self.size)
+        if self.flipped:
+            self.txr = 7 - self.txr
+            self.tyr = 7 - self.tyr
 
     def click(self):
         self.tx = int((pg.mouse.get_pos()[0] - self.offset[0]) // self.size)
@@ -845,7 +851,11 @@ class Engine:
                 else:
                     if (row, col) in self.highlighted:
                         surface.fill(self.colours4[count % 2])
-                        self.screen.blit(surface, (self.offset[0] + self.size * col, self.offset[1] + self.size * row))
+                        if self.flipped:
+                            self.screen.blit(surface,
+                                             (self.offset[0] + self.size * (-col+7), self.offset[1] + self.size * (-row+7)))
+                        else:
+                            self.screen.blit(surface, (self.offset[0] + self.size * col, self.offset[1] + self.size * row))
                     else:
                         if len(self.last_move) != 0:
                             if not self.flipped:
@@ -868,8 +878,12 @@ class Engine:
                                                      (self.offset[0] + self.size * col, self.offset[1] + self.size * row))
                         else:
                             surface.fill(self.colours[count % 2])
-                            self.screen.blit(surface,
-                                             (self.offset[0] + self.size * col, self.offset[1] + self.size * row))
+                            if self.flipped:
+                                self.screen.blit(surface,
+                                                 (self.offset[0] + self.size * (7 - col), self.offset[1] + self.size * (7 - row)))
+                            else:
+                                self.screen.blit(surface,
+                                                 (self.offset[0] + self.size * col, self.offset[1] + self.size * row))
                 count += 1
             count += 1
 
@@ -916,7 +930,11 @@ class Engine:
         for start, end in self.arrows:
             surface = pg.Surface((pg.display.get_window_size()[0], pg.display.get_window_size()[1]), pg.SRCALPHA)
             surface.set_alpha(200)
-            pg.draw.line(surface, self.arrow_colour, (off[0] + self.size * start[1], off[1] + self.size * start[0]),
+            if self.flipped:
+                pg.draw.line(surface, self.arrow_colour, (off[0] + self.size * (7-start[1]), off[1] + self.size * (7-start[0])),
+                             (off[0] + self.size * (7-end[1]), off[1] + self.size * (7-end[0])), 10)
+            else:
+                pg.draw.line(surface, self.arrow_colour, (off[0] + self.size * start[1], off[1] + self.size * start[0]),
                          (off[0] + self.size * end[1], off[1] + self.size * end[0]), 10)
             self.screen.blit(surface, (0, 0))
 
