@@ -27,13 +27,23 @@ class Piece(sprite.Sprite):
     def click(self):
         self.clicked = True
 
-    def update(self, screen, offset, turn):
+    def update(self, screen, offset, turn, flipped, board):
         #find and draw legal moves.
         # move the piece under the mouse
         self.clicked = True
         for i in self.legal_positions:
-            if -1 < (self.position[1] + i[0]) < 8 and -1 < (self.position[0] + i[1]) < 8 and turn == self.colour[0]:
-                pg.draw.circle(screen, (0, 204, 204), ((self.position[1] + i[0])*self.size + offset[0] + self.size/2, (self.position[0] + i[1])*self.size + offset[1] + self.size/2), self.size/4)
+            if board[(self.position[0] + i[1])][(self.position[1] + i[0])] == ' ':
+                if -1 < (self.position[1] + i[0]) < 8 and -1 < (self.position[0] + i[1]) < 8 and turn == self.colour[0]:
+                    if not flipped:
+                        pg.draw.circle(screen, (0, 204, 204), ((self.position[1] + i[0])*self.size + offset[0] + self.size/2, (self.position[0] + i[1])*self.size + offset[1] + self.size/2), self.size/4)
+                    else:
+                        pg.draw.circle(screen, (0, 204, 204), ((-self.position[1]+7 - i[0])*self.size + offset[0] + self.size/2, (-self.position[0]+7 - i[1])*self.size + offset[1] + self.size/2), self.size/4)
+            else:
+                if -1 < (self.position[1] + i[0]) < 8 and -1 < (self.position[0] + i[1]) < 8 and turn == self.colour[0]:
+                    if not flipped:
+                        pg.draw.rect(screen, (237, 109, 100), ((self.position[1] + i[0])*self.size + offset[0] + self.size/6, (self.position[0] + i[1])*self.size + offset[1] + self.size/6, 2*self.size/3, 2*self.size/3), border_radius=int(self.size/8))
+                    else:
+                        pg.draw.rect(screen, (237, 109, 100), ((-self.position[1]+7 - i[0])*self.size + offset[0] + self.size/6, (-self.position[0]+7 - i[1])*self.size + offset[1] + self.size/6, 2*self.size/3, 2*self.size/3), border_radius=int(self.size/8))
 
     def update_legal_moves(self, board, eps=None, captures=False):
         pass
@@ -131,13 +141,16 @@ class Piece(sprite.Sprite):
                 continue
 
 
-    def make_move(self, board, offset, turn, i=None, j=None):
+    def make_move(self, board, offset, turn, flipped, i=None, j=None):
         if i == None:
             x = int((pg.mouse.get_pos()[0] - offset[0]) // self.size)
             y = int((pg.mouse.get_pos()[1] - offset[1]) // self.size)
         else:
             x = i
             y = j
+        if flipped:
+            x = -x+7
+            y = -y+7
 
         if (x - self.position[1], y - self.position[0]) in self.legal_positions and self.colour[0] == turn:
             self.position = (y, x)
@@ -147,7 +160,7 @@ class Piece(sprite.Sprite):
             return False
 
 
-    def draw(self, offset, screen, size):
+    def draw(self, offset, screen, size, flipped):
         self.size = size
         if self.picture.get_size() != (self.size, self.size):
             self.picture = pg.image.load(
@@ -159,8 +172,12 @@ class Piece(sprite.Sprite):
                          pg.mouse.get_pos()[1] - self.size / 2)
                         )
         else:
-            screen.blit(self.picture,
+            if not flipped:
+                screen.blit(self.picture,
                         (offset[0] + self.size * self.position[1], offset[1] + self.size * self.position[0]))
+            else:
+                screen.blit(self.picture,
+                            (offset[0] + self.size * (-self.position[1]+7), offset[1] + self.size * (-self.position[0]+7)))
 
     def change_type(self, piece_type):
         self.piece_set = piece_type

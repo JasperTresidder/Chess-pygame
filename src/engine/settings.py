@@ -9,6 +9,9 @@ class SettingsMenu(pm.menu.Menu):
         self.parent = parent
         self.add.button('Back', self.exit_menu, accept_kwargs=True, font_shadow=True,
                         font_shadow_color=(100, 100, 100), font_background_color=(255, 0, 0), cursor=11, font_color=(0, 0, 0))
+        self.add.button('View Controls', self.view_controls, accept_kwargs=True, font_shadow=True,
+                        font_shadow_color=(100, 100, 100), font_background_color=(100, 100, 100), cursor=11,
+                        font_color=(0, 0, 0))
         self.pieces = [
             ('Alpha', 'alpha'),
             ('Cardinal', 'cardinal'),
@@ -66,25 +69,27 @@ class SettingsMenu(pm.menu.Menu):
 
         file = open('data/settings/settings.txt', 'r')
         lines = file.readlines()
-        self.label1 = self.add.label('Game Mode')
+        self.label1 = self.add.label('Game Mode:')
         self.mode = self.add.dropselect('', self.modes, int(lines[0].replace('\n', '')), selection_box_width=350,
                                             selection_option_font_size=None, placeholder='Select Mode',
                                             selection_box_height=6)
 
-        self.label2 = self.add.label('Pieces:')
+        self.label3 = self.add.label('Flip Board:')
+        self.flip = self.add.toggle_switch('', int(lines[4]))
+
+        self.label3 = self.add.label('Pieces:')
         self.piece = self.add.dropselect('', self.pieces, int(lines[1].replace('\n', '')), selection_box_width=350, selection_option_font_size=None, placeholder='Select Piece Type', selection_box_height=6)
 
-        self.label3 = self.add.label('Board Style')
+        self.label4 = self.add.label('Board Style:')
         self.board = self.add.dropselect('', self.board_background, int(lines[2].replace('\n', '')), selection_box_width=350,
                                             selection_option_font_size=None, placeholder='Select Board Style',
                                             selection_box_height=6)
 
-        self.label4 = self.add.label('AI Strength')
+        self.label5 = self.add.label('AI Strength:')
         self.strength = self.add.dropselect('', self.ai_strength, int(lines[3].replace('\n', '')), selection_box_width=350, selection_option_font_size=None, placeholder='Select Strength', selection_box_height=6)
 
         self.confirms = self.add.button('Confirm', self.confirm, accept_kwargs=True, font_shadow=True,
                         font_shadow_color=(100, 100, 100), font_background_color=(0, 200, 0), cursor=11, font_color=(0,0,0))
-        self.text = self.add.label('Undo - U\nSave and reset - Ctrl + S\nPrint game FEN position - Ctrl + F\nGet current evaluation - Crtl + E\nHint - Crtl + H', font_size=20, border_color=(150,150,150), border_width=3)
         self.resized = False
 
     def run(self):
@@ -104,16 +109,44 @@ class SettingsMenu(pm.menu.Menu):
         self.parent.change_mode(self.mode.get_value()[0][1])
         self.parent.change_board(self.board.get_value()[0][1])
         self.parent.change_ai_strength(self.strength.get_value()[0][1])
+        self.parent.flip_enable(int(self.flip.get_value()))
         with open('data/settings/settings.txt', 'w') as file:
             file.writelines(str(self.mode.get_index())+'\n')
             file.writelines(str(self.piece.get_index())+'\n')
             file.writelines(str(self.board.get_index())+'\n')
             file.writelines(str(self.strength.get_index())+'\n')
+            file.writelines(str(int(self.flip.get_value()))+'\n')
         self.mode.get_index()
         self.exit_menu()
+
+    def view_controls(self):
+        self.disable()
+        control_menu = Controls(title='Controls', width=self.screen.get_width(), height=self.screen.get_height(),surface=self.screen, parent=self, theme=pm.themes.THEME_DARK)
 
 
     def exit_menu(self):
         self.disable()
         if self.resized:
             self.parent.check_resize()
+
+
+class Controls(pm.menu.Menu):
+    def __init__(self, surface, parent,  *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.screen = surface
+        self.o_size = self.screen.get_size()
+        self.parent = parent
+
+        self.button = self.add.button('Back', self.exit_menu, accept_kwargs=True, font_shadow=True,
+                        font_shadow_color=(100, 100, 100), font_background_color=(255, 0, 0), cursor=11,
+                        font_color=(0, 0, 0))
+        self.text = self.add.label('Undo - U\nSave and reset - Ctrl + S\nPrint game FEN position - Ctrl + F\nGet current evaluation - Crtl + E\nReverse board - Ctrl + R\nHint - Crtl + H', font_size=20, border_color=(150,150,150), border_width=3)
+        self.enable()
+        self.mainloop(self.screen, fps_limit=120)
+
+    def exit_menu(self):
+        self.disable()
+        self.parent.enable()
+
+
+

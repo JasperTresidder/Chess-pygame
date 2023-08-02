@@ -44,6 +44,8 @@ class Engine:
         self.last_move = []
         self.highlighted = []
         self.arrows = []
+        self.flipped = False
+        self.flip_enabled = True
         self.platform = None
         if 'Windows' in platform.platform():
             self.platform = 'Windows/' + self.engine + '.exe'
@@ -144,6 +146,13 @@ class Engine:
             self.get_eval()
         self.clock = pg.time.Clock()
         self.settings.confirm()
+
+    def flip_enable(self, value):
+        if value == 1:
+            self.flip_enabled = True
+        else:
+            self.flip_enabled = False
+
     def run(self):
         self.draw_board()
         if self.updates:
@@ -195,6 +204,8 @@ class Engine:
                     print(self.game_fens[-1])
                 if event.key == pg.K_e and pg.key.get_mods() & pg.KMOD_CTRL:
                     self.evaluation = self.get_eval()
+                if event.key == pg.K_r and pg.key.get_mods() & pg.KMOD_CTRL:
+                    self.flip_board()
                 if event.key == pg.K_h and pg.key.get_mods() & pg.KMOD_CTRL:
                     self.stockfish.set_skill_level(20)
                     self.best_move = str(self.stockfish.get_best_move_time(200))
@@ -262,9 +273,12 @@ class Engine:
                     if self.board[row][col] != ' ':
                         if self.board[row][col].clicked:
                             # Make move if legal
-                            if self.board[row][col].make_move(self.board, self.offset, self.turn, None, None):
+                            if self.board[row][col].make_move(self.board, self.offset, self.turn, self.flipped, None, None):
                                 x = int((pg.mouse.get_pos()[0] - self.offset[0]) // self.size)
                                 y = int((pg.mouse.get_pos()[1] - self.offset[1]) // self.size)
+                                if self.flipped:
+                                    x = -x+7
+                                    y = -y+7
                                 if self.turn == 'w':
                                     self.turn = 'b'
                                     move = translate_move(row, col, y, x)
@@ -355,16 +369,20 @@ class Engine:
         self.draw_board()
         self.draw_pieces()
         pg.display.flip()
-        #time.sleep(0.15)
+        time.sleep(0.15)
         move = self.move_strength(self.ai_strength)
         if move is not None:
             self.last_move.append(move)
             if self.board[row][col] != ' ':
                 if self.board[row][col].piece == 'p':  # auto promote queen
-                    if y == 7:
+                    if y == 7 or y == 0:
                         move += 'q'
             self.node = self.node.add_variation(chess.Move.from_uci(move))
             self.engine_make_move(move) # Making the move
+        else:
+            print('Fault')
+            self.end_game()
+            self.reset_game()
 
     def move_strength(self, strength):
         # return moves[0]["Move"]
@@ -499,6 +517,8 @@ class Engine:
             create_FEN(self.board, self.turn, self.castle_rights, self.en_passant_square, self.fullmove_number))
         self.stockfish.set_fen_position(self.game_fens[-1])
         # print(self.game_fens[-1])
+        if not self.player_vs_ai and not self.ai_vs_ai:
+            self.flip_board()
 
         if self.node.board().is_repetition():
             print("DRAW BY REPETITION")
@@ -624,6 +644,8 @@ class Engine:
                 piece.change_type(self.piece_type)
             self.last_move.pop()
             self.node = self.node.parent  # allows for undoes to show in analysis on https://chess.com/analysis
+            if not self.player_vs_ai and not self.ai_vs_ai:
+                self.flip_board()
 
             self.update_board()
             self.update_legal_moves()
@@ -671,7 +693,7 @@ class Engine:
         return in_check
 
     def make_move_board(self, move, piece):
-        if self.board[piece.position[0]][piece.position[1]].make_move(self.board, self.offset, self.turn,
+        if self.board[piece.position[0]][piece.position[1]].make_move(self.board, self.offset, self.turn, self.flipped,
                                                                       piece.position[1] + move[0],
                                                                       piece.position[0] + move[1]):
             if self.turn == 'w':
@@ -688,7 +710,7 @@ class Engine:
             square2 = square_on(move[2:4])
             the_move = (square2[0] - square1[0], square2[1] - square1[1])
             piece = self.board[square1[0]][square1[1]]
-            if piece.make_move(self.board, self.offset, self.turn, piece.position[1] + the_move[1],
+            if piece.make_move(self.board, self.offset, self.turn, self.flipped, piece.position[1] + the_move[1],
                                piece.position[0] + the_move[0]):
                 if self.turn == 'w':
                     self.turn = 'b'
@@ -790,9 +812,14 @@ class Engine:
 
     def update_board(self):  # is currently clicking a piece?
         try:
-            if -1 < self.tx < 8 and -1 < self.ty < 8:
-                if self.board[self.ty][self.tx] != ' ':
-                    self.board[self.ty][self.tx].update(self.screen, self.offset, self.turn)
+            if not self.flipped:
+                if -1 < self.tx < 8 and -1 < self.ty < 8:
+                    if self.board[self.ty][self.tx] != ' ':
+                        self.board[self.ty][self.tx].update(self.screen, self.offset, self.turn, self.flipped, self.board)
+            else:
+                if -1 < self.tx < 8 and -1 < self.ty < 8:
+                    if self.board[-self.ty+7][-self.tx+7] != ' ':
+                        self.board[-self.ty+7][-self.tx+7].update(self.screen, self.offset, self.turn, self.flipped, self.board)
         except:
             pass
 
@@ -821,14 +848,24 @@ class Engine:
                         self.screen.blit(surface, (self.offset[0] + self.size * col, self.offset[1] + self.size * row))
                     else:
                         if len(self.last_move) != 0:
-                            if (row, col) in [square1, square2]:
-                                surface.fill(self.colours3[count % 2])
-                                self.screen.blit(surface,
-                                                 (self.offset[0] + self.size * col, self.offset[1] + self.size * row))
+                            if not self.flipped:
+                                if (row, col) in [square1, square2]:
+                                    surface.fill(self.colours3[count % 2])
+                                    self.screen.blit(surface,
+                                                     (self.offset[0] + self.size * col, self.offset[1] + self.size * row))
+                                else:
+                                    surface.fill(self.colours[count % 2])
+                                    self.screen.blit(surface,
+                                                     (self.offset[0] + self.size * col, self.offset[1] + self.size * row))
                             else:
-                                surface.fill(self.colours[count % 2])
-                                self.screen.blit(surface,
-                                                 (self.offset[0] + self.size * col, self.offset[1] + self.size * row))
+                                if ((-row+7), (-col+7)) in [square1, square2]:
+                                    surface.fill(self.colours3[count % 2])
+                                    self.screen.blit(surface,
+                                                     (self.offset[0] + self.size * col, self.offset[1] + self.size * row))
+                                else:
+                                    surface.fill(self.colours[count % 2])
+                                    self.screen.blit(surface,
+                                                     (self.offset[0] + self.size * col, self.offset[1] + self.size * row))
                         else:
                             surface.fill(self.colours[count % 2])
                             self.screen.blit(surface,
@@ -840,11 +877,15 @@ class Engine:
         if self.show_numbers:
             for i in range(8):
                 number = 8 - i
+                if self.flipped:
+                    number = -number + 9
                 surface = self.font.render(str(number), False, (255, 255, 255))
                 self.screen.blit(surface, (self.offset[0] - self.size / 2,
                                            self.offset[1] + self.size / 2 + self.size * i - 13))  # draw numbers
             for i in range(8):
                 letter = board_letters[i]
+                if self.flipped:
+                    letter = board_letters[7-i]
                 surface = self.font.render(str(letter), False, (255, 255, 255))
                 self.screen.blit(surface, (self.offset[0] + self.size/2 - 8 + self.size * i,
                                            self.offset[
@@ -862,11 +903,11 @@ class Engine:
     def draw_pieces(self, piece_selected=None):
         for piece in self.all_pieces:
             if piece != piece_selected:
-                piece.draw(self.offset, self.screen, self.size)
+                piece.draw(self.offset, self.screen, self.size, self.flipped)
 
         # Draw the piece last, if it is being clicked/dragged
         if piece_selected != None:
-            piece_selected.draw(self.offset, self.screen, self.size)
+            piece_selected.draw(self.offset, self.screen, self.size, False)
 
         self.draw_arrows()
 
@@ -878,4 +919,9 @@ class Engine:
             pg.draw.line(surface, self.arrow_colour, (off[0] + self.size * start[1], off[1] + self.size * start[0]),
                          (off[0] + self.size * end[1], off[1] + self.size * end[0]), 10)
             self.screen.blit(surface, (0, 0))
+
+    def flip_board(self):
+        if self.flip_enabled:
+            self.flipped = not self.flipped
+
 
