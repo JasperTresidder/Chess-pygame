@@ -11,6 +11,7 @@ import chess
 import chess.pgn
 import pygame_menu as pm
 import platform
+
 # "8/8/8/2k5/2pP4/8/B7/4K3 b - d3 0 3" - can en passant out of check!
 # "rnb2k1r/pp1Pbppp/2p5/q7/2B5/8/PPPQNnPP/RNB1K2R w KQ - 3 9" - 39 moves can promote to other pieces
 # rnbq1bnr/ppp1p1pp/3p4/6P1/1k1PPp1P/1PP2P1B/PB6/RN1QK2R b KQkq - 0 13 - king cant go to a4 here
@@ -21,13 +22,12 @@ EVAL_ON = False
 
 def print_eval(evaluation):
     if evaluation["type"] == "cp":
-        return 'Evaluation = ' + str(round(evaluation["value"]/100, 2))
+        return 'Evaluation = ' + str(round(evaluation["value"] / 100, 2))
     else:
         if evaluation["value"] < 0:
-            return 'Mate in '+ str(-evaluation["value"])
+            return 'Mate in ' + str(-evaluation["value"])
         else:
             return 'Mate in ' + str(evaluation["value"])
-
 
 
 class Engine:
@@ -53,18 +53,26 @@ class Engine:
             self.platform = 'macOS/stockfish'
         print("lit/" + self.engine + "/" + self.platform)
         if self.ai_vs_ai:
-            self.stockfish = Stockfish("lit/" + self.engine + "/" + self.platform,
-                                       depth=99,
-                                       parameters={"Threads": 6, "Minimum Thinking Time": 100, "Hash": 64,
-                                                   "Skill Level": 20,
-                                                   "UCI_Elo": 3000})
+            try:
+                self.stockfish = Stockfish("lit/" + self.engine + "/" + self.platform,
+                                           depth=99,
+                                           parameters={"Threads": 6, "Minimum Thinking Time": 100, "Hash": 64,
+                                                       "Skill Level": 20,
+                                                       "UCI_Elo": 3000})
+            except FileNotFoundError:
+                print("Stockfish program located in '" + "lit/" + self.engine + "/" + self.platform + "' is non respondent please install stockfish here: https://stockfishchess.org/download/")
+                sys.exit(0)
         else:
-            self.stockfish = Stockfish("lit/" + self.engine + "/" + self.platform,
-                                       depth=1,
-                                       parameters={"Threads": 1, "Minimum Thinking Time": 1, "Hash": 2,
-                                                   "Skill Level": 0.001,
-                                                   "UCI_LimitStrength": "true",
-                                                   "UCI_Elo": 0})
+            try:
+                self.stockfish = Stockfish("lit/" + self.engine + "/" + self.platform,
+                                           depth=1,
+                                           parameters={"Threads": 1, "Minimum Thinking Time": 1, "Hash": 2,
+                                                       "Skill Level": 0.001,
+                                                       "UCI_LimitStrength": "true",
+                                                       "UCI_Elo": 0})
+            except FileNotFoundError:
+                print("Stockfish program located in '" + "lit/" + self.engine + "/" + self.platform + "' is non respondent please install stockfish here: https://stockfishchess.org/download/")
+                sys.exit(0)
         self.stockfish.set_fen_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
         self.ai_strength = 0
         self.game = chess.pgn.Game()
@@ -91,8 +99,11 @@ class Engine:
         self.piece_type = 'chessmonk'
         self.board_style = 'marble.png'
 
-        self.screen = pg.display.set_mode((pg.display.get_desktop_sizes()[0][1] - 70, pg.display.get_desktop_sizes()[0][1] - 70), pg.RESIZABLE, vsync=1)
-        self.settings = SettingsMenu(title='Settings', width=self.screen.get_width(), height=self.screen.get_height(),surface=self.screen, parent=self, theme=pm.themes.THEME_DARK)
+        self.screen = pg.display.set_mode(
+            (pg.display.get_desktop_sizes()[0][1] - 70, pg.display.get_desktop_sizes()[0][1] - 70), pg.RESIZABLE,
+            vsync=1)
+        self.settings = SettingsMenu(title='Settings', width=self.screen.get_width(), height=self.screen.get_height(),
+                                     surface=self.screen, parent=self, theme=pm.themes.THEME_DARK)
         # "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
         icon = pg.image.load('data/img/pieces/cardinal/bk.png').convert_alpha()
         pg.display.set_icon(icon)
@@ -225,20 +236,23 @@ class Engine:
                 self.settings.resize_event()
                 self.background = pg.image.load('data/img/background_dark.png').convert()
                 self.background = pg.transform.smoothscale(self.background,
-                                                           (pg.display.get_window_size()[0], pg.display.get_window_size()[1]))
+                                                           (pg.display.get_window_size()[0],
+                                                            pg.display.get_window_size()[1]))
                 self.board_background = pg.image.load('data/img/boards/' + self.board_style).convert()
-                if self.default_size >= pg.display.get_window_size()[1] or self.default_size >= pg.display.get_window_size()[0]:
+                if self.default_size >= pg.display.get_window_size()[1] or self.default_size >= \
+                        pg.display.get_window_size()[0]:
                     self.show_numbers = False
                     if pg.display.get_window_size()[0] < pg.display.get_window_size()[1]:
-                        self.size = int((pg.display.get_window_size()[0])/8)
+                        self.size = int((pg.display.get_window_size()[0]) / 8)
                     else:
-                        self.size = int((pg.display.get_window_size()[1])/8)
-                elif (self.default_size < pg.display.get_window_size()[1] < self.default_size + 200) or (self.default_size < pg.display.get_window_size()[0] < self.default_size + 1000):
+                        self.size = int((pg.display.get_window_size()[1]) / 8)
+                elif (self.default_size < pg.display.get_window_size()[1] < self.default_size + 200) or (
+                        self.default_size < pg.display.get_window_size()[0] < self.default_size + 1000):
                     self.show_numbers = True
                     if pg.display.get_window_size()[0] < pg.display.get_window_size()[1]:
-                        self.size = int((pg.display.get_window_size()[0]-200)/8)
+                        self.size = int((pg.display.get_window_size()[0] - 200) / 8)
                     else:
-                        self.size = int((pg.display.get_window_size()[1]-200)/8)
+                        self.size = int((pg.display.get_window_size()[1] - 200) / 8)
                 else:
                     self.show_numbers = True
                 if self.size <= 1:
@@ -251,7 +265,7 @@ class Engine:
         if self.ai_vs_ai:
             self.un_click()
         pg.display.flip()
-        self.clock.tick(1000)
+        self.clock.tick(150)
 
     def get_eval(self):
         self.stockfish.set_depth(20)
@@ -273,12 +287,13 @@ class Engine:
                     if self.board[row][col] != ' ':
                         if self.board[row][col].clicked:
                             # Make move if legal
-                            if self.board[row][col].make_move(self.board, self.offset, self.turn, self.flipped, None, None):
+                            if self.board[row][col].make_move(self.board, self.offset, self.turn, self.flipped, None,
+                                                              None):
                                 x = int((pg.mouse.get_pos()[0] - self.offset[0]) // self.size)
                                 y = int((pg.mouse.get_pos()[1] - self.offset[1]) // self.size)
                                 if self.flipped:
-                                    x = -x+7
-                                    y = -y+7
+                                    x = -x + 7
+                                    y = -y + 7
                                 if self.turn == 'w':
                                     self.turn = 'b'
                                     move = translate_move(row, col, y, x)
@@ -378,7 +393,7 @@ class Engine:
                     if y == 7 or y == 0:
                         move += 'q'
             self.node = self.node.add_variation(chess.Move.from_uci(move))
-            self.engine_make_move(move) # Making the move
+            self.engine_make_move(move)  # Making the move
         else:
             print('Fault')
             self.end_game()
@@ -389,10 +404,10 @@ class Engine:
         if self.ai_vs_ai:
             if self.turn == 'w':
                 # self.stockfish.set_skill_level(20)
-                a = 15*(strength+1)
+                a = 15 * (strength + 1)
             else:
                 # self.stockfish.set_skill_level(1)
-                a = 15*(strength+1)
+                a = 15 * (strength + 1)
         else:
             a = random.randint(2, 5)
         move = self.stockfish.get_best_move_time(a)
@@ -821,11 +836,13 @@ class Engine:
             if not self.flipped:
                 if -1 < self.tx < 8 and -1 < self.ty < 8:
                     if self.board[self.ty][self.tx] != ' ':
-                        self.board[self.ty][self.tx].update(self.screen, self.offset, self.turn, self.flipped, self.board)
+                        self.board[self.ty][self.tx].update(self.screen, self.offset, self.turn, self.flipped,
+                                                            self.board)
             else:
                 if -1 < self.tx < 8 and -1 < self.ty < 8:
-                    if self.board[-self.ty+7][-self.tx+7] != ' ':
-                        self.board[-self.ty+7][-self.tx+7].update(self.screen, self.offset, self.turn, self.flipped, self.board)
+                    if self.board[-self.ty + 7][-self.tx + 7] != ' ':
+                        self.board[-self.ty + 7][-self.tx + 7].update(self.screen, self.offset, self.turn, self.flipped,
+                                                                      self.board)
         except:
             pass
 
@@ -853,34 +870,41 @@ class Engine:
                         surface.fill(self.colours4[count % 2])
                         if self.flipped:
                             self.screen.blit(surface,
-                                             (self.offset[0] + self.size * (-col+7), self.offset[1] + self.size * (-row+7)))
+                                             (self.offset[0] + self.size * (-col + 7),
+                                              self.offset[1] + self.size * (-row + 7)))
                         else:
-                            self.screen.blit(surface, (self.offset[0] + self.size * col, self.offset[1] + self.size * row))
+                            self.screen.blit(surface,
+                                             (self.offset[0] + self.size * col, self.offset[1] + self.size * row))
                     else:
                         if len(self.last_move) != 0:
                             if not self.flipped:
                                 if (row, col) in [square1, square2]:
                                     surface.fill(self.colours3[count % 2])
                                     self.screen.blit(surface,
-                                                     (self.offset[0] + self.size * col, self.offset[1] + self.size * row))
+                                                     (self.offset[0] + self.size * col,
+                                                      self.offset[1] + self.size * row))
                                 else:
                                     surface.fill(self.colours[count % 2])
                                     self.screen.blit(surface,
-                                                     (self.offset[0] + self.size * col, self.offset[1] + self.size * row))
+                                                     (self.offset[0] + self.size * col,
+                                                      self.offset[1] + self.size * row))
                             else:
-                                if ((-row+7), (-col+7)) in [square1, square2]:
+                                if ((-row + 7), (-col + 7)) in [square1, square2]:
                                     surface.fill(self.colours3[count % 2])
                                     self.screen.blit(surface,
-                                                     (self.offset[0] + self.size * col, self.offset[1] + self.size * row))
+                                                     (self.offset[0] + self.size * col,
+                                                      self.offset[1] + self.size * row))
                                 else:
                                     surface.fill(self.colours[count % 2])
                                     self.screen.blit(surface,
-                                                     (self.offset[0] + self.size * col, self.offset[1] + self.size * row))
+                                                     (self.offset[0] + self.size * col,
+                                                      self.offset[1] + self.size * row))
                         else:
                             surface.fill(self.colours[count % 2])
                             if self.flipped:
                                 self.screen.blit(surface,
-                                                 (self.offset[0] + self.size * (7 - col), self.offset[1] + self.size * (7 - row)))
+                                                 (self.offset[0] + self.size * (7 - col),
+                                                  self.offset[1] + self.size * (7 - row)))
                             else:
                                 self.screen.blit(surface,
                                                  (self.offset[0] + self.size * col, self.offset[1] + self.size * row))
@@ -899,16 +923,16 @@ class Engine:
             for i in range(8):
                 letter = board_letters[i]
                 if self.flipped:
-                    letter = board_letters[7-i]
+                    letter = board_letters[7 - i]
                 surface = self.font.render(str(letter), False, (255, 255, 255))
-                self.screen.blit(surface, (self.offset[0] + self.size/2 - 8 + self.size * i,
+                self.screen.blit(surface, (self.offset[0] + self.size / 2 - 8 + self.size * i,
                                            self.offset[
-                                               1] + 17 * self.size / 2  - 25))  # draw letters
+                                               1] + 17 * self.size / 2 - 25))  # draw letters
             surface = self.font.render('Settings = ESC', False, (255, 255, 255))
             self.screen.blit(surface, (20, 20))
             if self.evaluation != '':
                 surface = self.font.render(self.evaluation, False, (255, 255, 255))
-                self.screen.blit(surface, (self.screen.get_width()/2 - surface.get_width()/2, 20))
+                self.screen.blit(surface, (self.screen.get_width() / 2 - surface.get_width() / 2, 20))
 
             if self.best_move != '':
                 surface = self.font.render('Hint: ' + self.best_move, False, (255, 255, 255))
@@ -931,15 +955,14 @@ class Engine:
             surface = pg.Surface((pg.display.get_window_size()[0], pg.display.get_window_size()[1]), pg.SRCALPHA)
             surface.set_alpha(200)
             if self.flipped:
-                pg.draw.line(surface, self.arrow_colour, (off[0] + self.size * (7-start[1]), off[1] + self.size * (7-start[0])),
-                             (off[0] + self.size * (7-end[1]), off[1] + self.size * (7-end[0])), 10)
+                pg.draw.line(surface, self.arrow_colour,
+                             (off[0] + self.size * (7 - start[1]), off[1] + self.size * (7 - start[0])),
+                             (off[0] + self.size * (7 - end[1]), off[1] + self.size * (7 - end[0])), 10)
             else:
                 pg.draw.line(surface, self.arrow_colour, (off[0] + self.size * start[1], off[1] + self.size * start[0]),
-                         (off[0] + self.size * end[1], off[1] + self.size * end[0]), 10)
+                             (off[0] + self.size * end[1], off[1] + self.size * end[0]), 10)
             self.screen.blit(surface, (0, 0))
 
     def flip_board(self):
         if self.flip_enabled:
             self.flipped = not self.flipped
-
-

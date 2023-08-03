@@ -1,4 +1,7 @@
 import pygame_menu as pm
+import pygame as pg
+from pygame_menu.controls import Controller
+import sys
 
 
 class SettingsMenu(pm.menu.Menu):
@@ -7,11 +10,15 @@ class SettingsMenu(pm.menu.Menu):
         self.screen = surface
         self.o_size = self.screen.get_size()
         self.parent = parent
-        self.add.button('Back', self.exit_menu, accept_kwargs=True, font_shadow=True,
+        custom_controller = Controller()
+        custom_controller.apply = self.btn_apply
+        self.back = self.add.button('Back', self.exit_menu, accept_kwargs=True, font_shadow=True,
                         font_shadow_color=(100, 100, 100), font_background_color=(255, 0, 0), cursor=11, font_color=(0, 0, 0))
-        self.add.button('View Controls', self.view_controls, accept_kwargs=True, font_shadow=True,
+        self.back.set_controller(custom_controller)
+        view = self.add.button('View Controls', self.view_controls, accept_kwargs=True, font_shadow=True,
                         font_shadow_color=(100, 100, 100), font_background_color=(100, 100, 100), cursor=11,
                         font_color=(0, 0, 0))
+        view.set_controller(custom_controller)
         self.pieces = [
             ('Alpha', 'alpha'),
             ('Cardinal', 'cardinal'),
@@ -72,24 +79,32 @@ class SettingsMenu(pm.menu.Menu):
         self.label1 = self.add.label('Game Mode:')
         self.mode = self.add.dropselect('', self.modes, int(lines[0].replace('\n', '')), selection_box_width=350,
                                             selection_option_font_size=None, placeholder='Select Mode',
-                                            selection_box_height=6)
+                                            selection_box_height=6, cursor=11)
+        self.mode.set_controller(custom_controller)
 
         self.label3 = self.add.label('Flip Board:')
-        self.flip = self.add.toggle_switch('', int(lines[4]))
+        self.flip = self.add.toggle_switch('', int(lines[4]), cursor=11)
+        self.flip.set_controller(custom_controller)
+
 
         self.label3 = self.add.label('Pieces:')
-        self.piece = self.add.dropselect('', self.pieces, int(lines[1].replace('\n', '')), selection_box_width=350, selection_option_font_size=None, placeholder='Select Piece Type', selection_box_height=6)
+        self.piece = self.add.dropselect('', self.pieces, int(lines[1].replace('\n', '')), selection_box_width=350, selection_option_font_size=None, placeholder='Select Piece Type', selection_box_height=6, cursor=11)
+        self.piece.set_controller(custom_controller)
 
         self.label4 = self.add.label('Board Style:')
         self.board = self.add.dropselect('', self.board_background, int(lines[2].replace('\n', '')), selection_box_width=350,
                                             selection_option_font_size=None, placeholder='Select Board Style',
-                                            selection_box_height=6)
+                                            selection_box_height=6, cursor=11)
+        self.board.set_controller(custom_controller)
 
         self.label5 = self.add.label('AI Strength:')
-        self.strength = self.add.dropselect('', self.ai_strength, int(lines[3].replace('\n', '')), selection_box_width=350, selection_option_font_size=None, placeholder='Select Strength', selection_box_height=6)
+        self.strength = self.add.dropselect('', self.ai_strength, int(lines[3].replace('\n', '')), selection_box_width=350, selection_option_font_size=None, placeholder='Select Strength', selection_box_height=6, cursor=11)
+        self.strength.set_controller(custom_controller)
 
         self.confirms = self.add.button('Confirm', self.confirm, accept_kwargs=True, font_shadow=True,
                         font_shadow_color=(100, 100, 100), font_background_color=(0, 200, 0), cursor=11, font_color=(0,0,0))
+        self.confirms.set_controller(custom_controller)
+
         self.resized = False
 
     def run(self):
@@ -122,6 +137,12 @@ class SettingsMenu(pm.menu.Menu):
     def view_controls(self):
         self.disable()
         control_menu = Controls(title='Controls', width=self.screen.get_width(), height=self.screen.get_height(),surface=self.screen, parent=self, theme=pm.themes.THEME_DARK)
+        control_menu.run()
+
+    def btn_apply(self, event, ob):
+        applied = event.key == 27
+        if applied:
+            self.exit_menu()
 
 
     def exit_menu(self):
@@ -136,13 +157,31 @@ class Controls(pm.menu.Menu):
         self.screen = surface
         self.o_size = self.screen.get_size()
         self.parent = parent
-
+        custom_controller = Controller()
+        custom_controller.apply = self.btn_apply
         self.button = self.add.button('Back', self.exit_menu, accept_kwargs=True, font_shadow=True,
                         font_shadow_color=(100, 100, 100), font_background_color=(255, 0, 0), cursor=11,
                         font_color=(0, 0, 0))
-        self.text = self.add.label('Undo - U\nSave and reset - Ctrl + S\nPrint game FEN position - Ctrl + F\nGet current evaluation - Crtl + E\nReverse board - Ctrl + R\nHint - Crtl + H', font_size=20, border_color=(150,150,150), border_width=3)
+        self.button.set_controller(custom_controller)
+        self.text = self.add.label('Undo - U\nSave and reset - Ctrl + S\nPrint game FEN position - Ctrl + F\nGet current evaluation - Crtl + E\nReverse board - Ctrl + R\nHint - Crtl + H', font_size=20, border_color=(150,150,150), border_width=3, label_id='123')
+        self.resized = False
+
+    def run(self):
         self.enable()
-        self.mainloop(self.screen, fps_limit=120)
+        self.mainloop(self.screen, self.resize_event, fps_limit=120)
+
+    def resize_event(self):
+        if self.screen.get_size() != self.o_size:
+            self.resized = True
+            self.resize(self.screen.get_width(), self.screen.get_height())
+            self.render()
+            self.force_surface_cache_update()
+            self.o_size = self.screen.get_size()
+
+    def btn_apply(self, event, ob):
+        applied = event.key == 27
+        if applied:
+            self.exit_menu()
 
     def exit_menu(self):
         self.disable()

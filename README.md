@@ -5,10 +5,8 @@ First upload. Needs refinement. </h3>
 Size: 166Mb</h5>
 
 ### Tips:
-- Click middle mouse button or press 'u' to <b>undo</b> move 
-- Crtl + F to print the FEN position
+- You may have to <a href="https://stockfishchess.org/download/">install</a> your own version of Stockfish.<br>
 - Games are <b>automatically saved</b> in the <b>/data/games</b> folder as a pgn file
-- You can forfeit with Ctrl + S
 - You can resize the window how you like 
 
 
