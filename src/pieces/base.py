@@ -142,13 +142,14 @@ class Piece(sprite.Sprite):
 
 
     def make_move(self, board, offset, turn, flipped, i=None, j=None):
+        # ai move's using i amd j
         if i == None:
             x = int((pg.mouse.get_pos()[0] - offset[0]) // self.size)
             y = int((pg.mouse.get_pos()[1] - offset[1]) // self.size)
         else:
             x = i
             y = j
-        if flipped:
+        if flipped and i is None:
             x = -x+7
             y = -y+7
 

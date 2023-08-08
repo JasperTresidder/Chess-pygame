@@ -20,6 +20,7 @@ class SettingsMenu(pm.menu.Menu):
                         font_color=(0, 0, 0))
         view.set_controller(custom_controller)
         self.pieces = [
+            ('Alila', 'alila'),
             ('Alpha', 'alpha'),
             ('Cardinal', 'cardinal'),
             ('Chessicons', 'chessicons'),
