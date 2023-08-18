@@ -31,9 +31,9 @@ def print_eval(evaluation):
 
 
 class Engine:
-    def __init__(self, player_vs_ai: bool, ai_vs_ai: bool):
-        self.player_vs_ai = player_vs_ai
-        self.ai_vs_ai = ai_vs_ai
+    def __init__(self):
+        self.player_vs_ai = None
+        self.ai_vs_ai = None
         self.evaluation = ''
         self.best_move = ''
         self.game_just_ended = False
@@ -158,12 +158,6 @@ class Engine:
         self.clock = pg.time.Clock()
         self.settings.confirm()
 
-    def flip_enable(self, value):
-        if value == 1:
-            self.flip_enabled = True
-        else:
-            self.flip_enabled = False
-
     def run(self):
         self.draw_board()
         if self.updates:
@@ -189,7 +183,6 @@ class Engine:
                 elif event.button == 3:
                     self.click_right()
             elif event.type == pg.MOUSEBUTTONUP:
-
                 if event.button == 1 and self.updates:
                     self.left = False
                     self.un_click()
@@ -447,7 +440,6 @@ class Engine:
             pieces.clicked = False
         self.left = False
 
-    # @timeit
     def moved(self):
         self.prev_board = self.board
         eps_moved_made = False
@@ -860,54 +852,39 @@ class Engine:
         count = 1
         for row in range(8):
             for col in range(8):
+                if self.flipped:
+                    row_new = -row + 7
+                    col_new = -col + 7
+                else:
+                    row_new = row
+                    col_new = col
                 surface = pg.Surface((self.size, self.size))
                 surface.set_alpha(200)
-                if self.debug and (row, col) in self.map:
+                if self.debug and (row_new, col_new) in self.map:
                     surface.fill(self.colours2[count % 2])
-                    self.screen.blit(surface, (self.offset[0] + self.size * col, self.offset[1] + self.size * row))
+                    self.screen.blit(surface, (self.offset[0] + self.size * col_new, self.offset[1] + self.size * row_new))
                 else:
                     if (row, col) in self.highlighted:
                         surface.fill(self.colours4[count % 2])
-                        if self.flipped:
-                            self.screen.blit(surface,
-                                             (self.offset[0] + self.size * (-col + 7),
-                                              self.offset[1] + self.size * (-row + 7)))
-                        else:
-                            self.screen.blit(surface,
-                                             (self.offset[0] + self.size * col, self.offset[1] + self.size * row))
+                        self.screen.blit(surface,
+                                         (self.offset[0] + self.size * col_new, self.offset[1] + self.size * row_new))
                     else:
                         if len(self.last_move) != 0:
-                            if not self.flipped:
-                                if (row, col) in [square1, square2]:
-                                    surface.fill(self.colours3[count % 2])
-                                    self.screen.blit(surface,
-                                                     (self.offset[0] + self.size * col,
-                                                      self.offset[1] + self.size * row))
-                                else:
-                                    surface.fill(self.colours[count % 2])
-                                    self.screen.blit(surface,
-                                                     (self.offset[0] + self.size * col,
-                                                      self.offset[1] + self.size * row))
+                            if (row, col) in [square1, square2]:
+                                surface.fill(self.colours3[count % 2])
+                                self.screen.blit(surface,
+                                                 (self.offset[0] + self.size * col_new,
+                                                  self.offset[1] + self.size * row_new))
                             else:
-                                if ((-row + 7), (-col + 7)) in [square1, square2]:
-                                    surface.fill(self.colours3[count % 2])
-                                    self.screen.blit(surface,
-                                                     (self.offset[0] + self.size * col,
-                                                      self.offset[1] + self.size * row))
-                                else:
-                                    surface.fill(self.colours[count % 2])
-                                    self.screen.blit(surface,
-                                                     (self.offset[0] + self.size * col,
-                                                      self.offset[1] + self.size * row))
+                                surface.fill(self.colours[count % 2])
+                                self.screen.blit(surface,
+                                                 (self.offset[0] + self.size * col_new,
+                                                  self.offset[1] + self.size * row_new))
                         else:
                             surface.fill(self.colours[count % 2])
-                            if self.flipped:
-                                self.screen.blit(surface,
-                                                 (self.offset[0] + self.size * (7 - col),
-                                                  self.offset[1] + self.size * (7 - row)))
-                            else:
-                                self.screen.blit(surface,
-                                                 (self.offset[0] + self.size * col, self.offset[1] + self.size * row))
+                            self.screen.blit(surface,
+                                             (self.offset[0] + self.size * col_new,
+                                              self.offset[1] + self.size * row_new))
                 count += 1
             count += 1
 
@@ -963,6 +940,12 @@ class Engine:
                              (off[0] + self.size * end[1], off[1] + self.size * end[0]), 10)
             self.screen.blit(surface, (0, 0))
 
+    def flip_enable(self, value):
+        if value == 1:
+            self.flip_enabled = True
+        else:
+            self.flip_enabled = False
+
     def flip_board(self):
-        if self.flip_enabled:
-            self.flipped = not self.flipped
+        self.flipped = not self.flipped
+

@@ -1,3 +1,4 @@
 /data/games/*
 /lit/git_example
 !.gitignore
+/builds/

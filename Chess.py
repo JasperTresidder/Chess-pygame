@@ -28,6 +28,6 @@ from src.engine.engine import Engine
 # All games are saved to data/games/ as a pgn file.
 
 if __name__ == '__main__':
-    engine = Engine(True, False)
+    engine = Engine()
     while 1:
         engine.run()

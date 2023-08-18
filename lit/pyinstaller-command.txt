@@ -1,0 +1,1 @@
+pyinstaller --noconsole -i "./data/img/chess.ico" -F --onefile --distpath "./builds/dist" --workpath "./builds/build" --specpath "./builds" Chess.py
