@@ -24,7 +24,7 @@ MacOS/Unix:</h4>
 <code>.\env\Scripts\activate</code>
 <h4>Install packages from the requirements list into the venv. <br> Then run the program</h4>
 <code>python -m pip install -r requirements.txt </code><br>
-<code>python main.py</code>
+<code>python CHess.py</code>
 
 ## Important
 <div class="box">
