@@ -90,7 +90,6 @@ class Piece(sprite.Sprite):
                                         updated_moves.append(move)
                                 self.legal_positions = updated_moves
 
-
     def pin_line_update(self, board):
         self.pin_lines.clear()
         x = self.position[1]
@@ -160,7 +159,6 @@ class Piece(sprite.Sprite):
         else:
             return False
 
-
     def draw(self, offset, screen, size, flipped):
         self.size = size
         if self.picture.get_size() != (self.size, self.size):
@@ -185,7 +183,6 @@ class Piece(sprite.Sprite):
         self.picture = pg.image.load(
             "data/img/pieces/" + self.piece_set + "/" + self.colour[0] + self.piece.lower() + ".png").convert_alpha()
         self.picture = pg.transform.smoothscale(self.picture, (self.size, self.size))
-
 
     def __del__(self):
         self.dead = True

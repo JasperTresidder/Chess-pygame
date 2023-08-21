@@ -1,3 +1,5 @@
+import os
+
 import pygame_menu as pm
 import pygame as pg
 from pygame_menu.controls import Controller
@@ -187,6 +189,53 @@ class Controls(pm.menu.Menu):
     def exit_menu(self):
         self.disable()
         self.parent.enable()
+
+
+
+class EndGameMenu(pm.menu.Menu):
+    def __init__(self, surface, parent,  *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.screen = surface
+        self.o_size = self.screen.get_size()
+        self.parent = parent
+        custom_controller = Controller()
+        custom_controller.apply = self.btn_apply
+        self.button = self.add.button('View PGN file', self.view_file, accept_kwargs=True, font_shadow=True,
+                                      font_shadow_color=(100, 100, 100), font_background_color=(20, 20, 200), cursor=11,
+                                      font_color=(0, 0, 0))
+        self.button = self.add.button('Reset', self.exit_menu, accept_kwargs=True, font_shadow=True,
+                        font_shadow_color=(100, 100, 100), font_background_color=(255, 0, 0), cursor=11,
+                        font_color=(0, 0, 0))
+        self.button.set_controller(custom_controller)
+        self.resized = False
+        self.file_path = None
+
+    def run(self):
+        self.enable()
+        self.mainloop(self.screen, self.resize_event, fps_limit=120)
+
+    def set_file_path_and_text(self, path, text):
+        self.add.label(text, max_char=1000)
+        self.file_path = path
+
+    def view_file(self):
+        os.system('notepad ' + self.file_path)
+
+    def resize_event(self):
+        if self.screen.get_size() != self.o_size:
+            self.resized = True
+            self.resize(self.screen.get_width(), self.screen.get_height())
+            self.render()
+            self.force_surface_cache_update()
+            self.o_size = self.screen.get_size()
+
+    def btn_apply(self, event, ob):
+        applied = event.key == 27
+        if applied:
+            self.exit_menu()
+
+    def exit_menu(self):
+        self.disable()
 
 
 

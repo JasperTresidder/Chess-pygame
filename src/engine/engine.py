@@ -1,7 +1,9 @@
 import datetime
 import random
 import sys
-from src.engine.settings import SettingsMenu
+import time
+
+from src.engine.settings import SettingsMenu, EndGameMenu
 from src.functions.fen import *
 import pygame as pg
 from src.functions.timer import *
@@ -147,7 +149,7 @@ class Engine:
                                                          (self.size * 8, self.size * 8))
         self.offset = [pg.display.get_window_size()[0] / 2 - 4 * self.size,
                        pg.display.get_window_size()[1] / 2 - 4 * self.size]
-        self.update_board()
+        #self.update_board()
         self.update_legal_moves()
         self.prev_board = self.board
         self.debug = False
@@ -182,6 +184,8 @@ class Engine:
                     self.click()
                 elif event.button == 3:
                     self.click_right()
+                elif event.button == 4 or event.button == 5:
+                    self.flip_board()
             elif event.type == pg.MOUSEBUTTONUP:
                 if event.button == 1 and self.updates:
                     self.left = False
@@ -203,7 +207,7 @@ class Engine:
                 self.updates = False
             elif event.type == pg.KEYDOWN:
                 if event.key == pg.K_s and pg.key.get_mods() & pg.KMOD_CTRL:
-                    self.end_game()
+                    self.end_game("Game saved and Reset")
                 if event.key == pg.K_f and pg.key.get_mods() & pg.KMOD_CTRL:
                     print(self.game_fens[-1])
                 if event.key == pg.K_e and pg.key.get_mods() & pg.KMOD_CTRL:
@@ -389,7 +393,7 @@ class Engine:
             self.engine_make_move(move)  # Making the move
         else:
             print('Fault')
-            self.end_game()
+            self.end_game('Fault')
             self.reset_game()
 
     def move_strength(self, strength):
@@ -531,48 +535,49 @@ class Engine:
             self.flip_board()
 
         if self.node.board().is_repetition():
-            print("DRAW BY REPETITION")
             pg.mixer.music.load('data/sounds/mate.wav')
             pg.mixer.music.play(1)
             time.sleep(0.15)
             pg.mixer.music.play(1)
-            self.end_game()
+            self.end_game("DRAW BY REPETITION")
         elif self.node.board().is_stalemate():
-            print("STALEMATE")
             pg.mixer.music.load('data/sounds/mate.wav')
             pg.mixer.music.play(1)
             time.sleep(0.15)
             pg.mixer.music.play(1)
-            self.end_game()
+            self.end_game("INSUFFICIENT MATERIAL")
         elif self.node.board().is_insufficient_material():
-            print("INSUFFICIENT MATERIAL")
             pg.mixer.music.load('data/sounds/mate.wav')
             pg.mixer.music.play(1)
             time.sleep(0.15)
             pg.mixer.music.play(1)
-            self.end_game()
+            self.end_game("INSUFFICIENT MATERIAL")
         elif self.node.board().is_checkmate() or legal_moves == 0:
-            if self.node.board().outcome().winner:
-                print("CHECKMATE WHITE WINS !!")
-            else:
-                print("CHECKMATE BLACK WINS !!")
             pg.mixer.music.load('data/sounds/mate.wav')
             pg.mixer.music.play(1)
             time.sleep(0.15)
             pg.mixer.music.play(1)
-            self.end_game()
+            if self.node.board().outcome().winner:
+                self.end_game("CHECKMATE WHITE WINS !!")
+            else:
+                self.end_game("CHECKMATE BLACK WINS !!")
         # pprint(self.board, indent=3)
 
-    def end_game(self):
+    def end_game(self, end_text):
         self.game_just_ended = True
         dt = datetime.datetime.now()
         dt = dt.strftime("%Y%m%d_%H%M%S_%f")
         print(self.game, file=open("data/games/" + dt + ".pgn", "w"), end="\n\n")
+        game_str = str(self.game)
+        time.sleep(1)
         self.reset_game()
-        # file = open(str(dt) + ".pgn" + "w")
-        # file.writelines(self.game)
-        # file.close()
-        # print(self.game, file=open("../../data/games/" + dt + ".pgn" + "w+"), end="\n\n")
+
+        # End game screen
+        self.end_game_menu = EndGameMenu(title='Game Over', width=self.screen.get_width(), height=self.screen.get_height(),
+                                     surface=self.screen, parent=self, theme=pm.themes.THEME_DARK)
+        self.end_game_menu.set_file_path_and_text("data/games/" + dt + ".pgn", end_text)
+        self.end_game_menu.run()
+
 
     def reset_game(self):
         self.updates_kill()
@@ -598,6 +603,7 @@ class Engine:
                     pass
         for piece in self.all_pieces:
             piece.change_type(self.piece_type)
+            piece.clicked = False
         self.last_move = []
         self.game = chess.pgn.Game()
         self.game.headers["Event"] = "Player Vs Computer"
@@ -621,7 +627,7 @@ class Engine:
         self.game.headers["BlackElo"] = "?"
         self.node = self.game
         self.stockfish.set_fen_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
-        self.update_board()
+        # self.update_board()
         self.update_legal_moves()
 
     def undo_move(self, one):
