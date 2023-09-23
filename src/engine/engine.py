@@ -8,8 +8,10 @@ from src.functions.fen import *
 import pygame as pg
 from src.functions.timer import *
 from src.pieces.queen import Queen
+from src.pieces.base import Piece
 from stockfish import Stockfish
 import chess
+import chess.engine
 import chess.pgn
 import pygame_menu as pm
 import platform
@@ -62,7 +64,8 @@ class Engine:
                                                        "Skill Level": 20,
                                                        "UCI_Elo": 3000})
             except FileNotFoundError:
-                print("Stockfish program located in '" + "lit/" + self.engine + "/" + self.platform + "' is non respondent please install stockfish here: https://stockfishchess.org/download/")
+                print(
+                    "Stockfish program located in '" + "lit/" + self.engine + "/" + self.platform + "' is non respondent please install stockfish here: https://stockfishchess.org/download/")
                 sys.exit(0)
         else:
             try:
@@ -73,10 +76,13 @@ class Engine:
                                                        "UCI_LimitStrength": "true",
                                                        "UCI_Elo": 0})
             except FileNotFoundError:
-                print("Stockfish program located in '" + "lit/" + self.engine + "/" + self.platform + "' is non respondent please install stockfish here: https://stockfishchess.org/download/")
+                print(
+                    "Stockfish program located in '" + "lit/" + self.engine + "/" + self.platform + "' is non respondent please install stockfish here: https://stockfishchess.org/download/")
                 sys.exit(0)
         self.stockfish.set_fen_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
         self.ai_strength = 0
+
+        # self.engine_ = chess.engine.SimpleEngine.popen_uci('lit/stockfish/Windows/stockfish.exe')
         self.game = chess.pgn.Game()
 
         if self.ai_vs_ai:
@@ -149,7 +155,7 @@ class Engine:
                                                          (self.size * 8, self.size * 8))
         self.offset = [pg.display.get_window_size()[0] / 2 - 4 * self.size,
                        pg.display.get_window_size()[1] / 2 - 4 * self.size]
-        #self.update_board()
+        # self.update_board()
         self.update_legal_moves()
         self.prev_board = self.board
         self.debug = False
@@ -160,7 +166,7 @@ class Engine:
         self.clock = pg.time.Clock()
         self.settings.confirm()
 
-    def run(self):
+    def run(self) -> None:
         self.draw_board()
         if self.updates:
             self.update_board()
@@ -181,7 +187,7 @@ class Engine:
                 self.game_just_ended = False
                 if event.button == 1 and not self.game_just_ended:
                     self.left = True
-                    self.click()
+                    self.click_left()
                 elif event.button == 3:
                     self.click_right()
                 elif event.button == 4 or event.button == 5:
@@ -189,7 +195,7 @@ class Engine:
             elif event.type == pg.MOUSEBUTTONUP:
                 if event.button == 1 and self.updates:
                     self.left = False
-                    self.un_click()
+                    self.un_click_left()
                 elif event.button == 1:
                     self.left = False
                 elif event.button == 2:
@@ -260,18 +266,26 @@ class Engine:
                                pg.display.get_window_size()[1] / 2 - 4 * self.size]
 
         if self.ai_vs_ai:
-            self.un_click()
+            self.un_click_left()
         pg.display.flip()
         self.clock.tick(150)
 
-    def get_eval(self):
+    def get_eval(self) -> str:
+        """
+        Get board evaluation
+        :return: Evaluation string
+        """
         self.stockfish.set_depth(20)
         eve = print_eval(self.stockfish.get_evaluation())
         self.stockfish.set_depth(99)
         return eve
 
     # @timeit
-    def un_click(self):
+    def un_click_left(self) -> None:
+        """
+        Left click release event logic. Calls make_move which makes a move if it is legal
+        :return: None
+        """
         self.highlighted.clear()
         self.arrows.clear()
         if self.ai_vs_ai:
@@ -326,18 +340,32 @@ class Engine:
                                 self.board[row][col].clicked = False
                             break
 
-    def change_pieces(self, piece_type):
+    def change_pieces(self, piece_type: str) -> None:
+        """
+        Changes the piece style.
+        :param piece_type: string name of the piece type.
+        :return: None
+        """
         self.piece_type = piece_type
         for piece in self.all_pieces:
             piece.change_type(piece_type)
 
     def change_board(self, board_type):
+        """
+        Changes the Board style.
+        :param board_type: filename of the board located in 'data/img/boards/'
+        :return: None
+        """
         self.board_style = board_type
         self.board_background = pg.image.load('data/img/boards/' + self.board_style).convert()
         self.board_background = pg.transform.smoothscale(self.board_background,
                                                          (self.size * 8, self.size * 8))
 
     def check_resize(self):
+        """
+        Checks if the window has been resized and handles resizing
+        :return: None
+        """
         self.screen = pg.display.set_mode((self.screen.get_width(), self.screen.get_height()), pg.RESIZABLE, vsync=1)
         self.background = pg.image.load('data/img/background_dark.png').convert()
         self.background = pg.transform.smoothscale(self.background,
@@ -365,7 +393,12 @@ class Engine:
         self.offset = [pg.display.get_window_size()[0] / 2 - 4 * self.size,
                        pg.display.get_window_size()[1] / 2 - 4 * self.size]
 
-    def change_mode(self, mode):
+    def change_mode(self, mode: str):
+        """
+        Changes the game mode to Player vs Player, Player vs AI, or AI vs AI
+        :param mode: String of the mode: 'pvp', 'pvai', or 'aivai'
+        :return: None
+        """
         if mode == 'pvp':
             self.ai_vs_ai = False
             self.player_vs_ai = False
@@ -376,7 +409,13 @@ class Engine:
             self.ai_vs_ai = False
             self.player_vs_ai = True
 
-    def ai_make_move(self, y, row, col):
+    def ai_make_move(self, y: int, row: int, col: int):
+        """
+        :param y: the moves column number; For promotion logic
+        :param row: Row position of the piece to move
+        :param col: Column position of the piece to move
+        :return: None
+        """
         # Engine Moves
         self.draw_board()
         self.draw_pieces()
@@ -396,7 +435,12 @@ class Engine:
             self.end_game('Fault')
             self.reset_game()
 
-    def move_strength(self, strength):
+    def move_strength(self, strength: int) -> str | None:
+        """
+        Get the best move given the strength input
+        :param strength: the strength of the move to be generated
+        :return: Move - the algebraic notation of the move as a string
+        """
         # return moves[0]["Move"]
         if self.ai_vs_ai:
             if self.turn == 'w':
@@ -410,17 +454,27 @@ class Engine:
         move = self.stockfish.get_best_move_time(a)
         return move
 
-    def change_ai_strength(self, num):
+    def change_ai_strength(self, num: int) -> None:
+        """
+        Set skill level of the AI
+        :param num: strength of the AI from 0-20
+        :return: None
+        """
         self.ai_strength = num
         self.stockfish.set_skill_level(num)
 
-    def un_click_right(self, right_click):
+    def un_click_right(self, left_click: bool) -> None:
+        """
+        Handle right unclick event. Used for highlights and arrows
+        :param left_click: is currently clicking left?
+        :return: None
+        """
         txr = int((pg.mouse.get_pos()[0] - self.offset[0]) // self.size)
         tyr = int((pg.mouse.get_pos()[1] - self.offset[1]) // self.size)
         if self.flipped:
             txr = 7 - txr
             tyr = 7 - tyr
-        if right_click:
+        if left_click:
             if self.txr == txr and self.tyr == tyr:
                 if (tyr, txr) in self.highlighted:
                     self.highlighted.remove((tyr, txr))
@@ -430,21 +484,28 @@ class Engine:
                 if ((self.tyr, self.txr), (tyr, txr)) in self.arrows:
                     self.arrows.remove(((self.tyr, self.txr), (tyr, txr)))
                 else:
-                    try:
-                        if -1 < self.txr < 8 and -1 < self.tyr < 8 and -1 < txr < 8 and -1 < tyr < 8:
-                            self.arrows.append(((self.tyr, self.txr), (tyr, txr)))
-                    except:
-                        pass
+                    if -1 < self.txr < 8 and -1 < self.tyr < 8 and -1 < txr < 8 and -1 < tyr < 8:
+                        self.arrows.append(((self.tyr, self.txr), (tyr, txr)))
+
         for pieces in self.all_pieces:
             pieces.clicked = False
 
-    def updates_kill(self):
+    def updates_kill(self) -> None:
+        """
+        kill updating the clicked pieces. used to unclick all pieces
+        :return: None
+        """
         self.updates = False
         for pieces in self.all_pieces:
             pieces.clicked = False
         self.left = False
 
-    def moved(self):
+    def moved(self) -> None:
+        """
+        Called after make_move to update legal moves,
+        check for the end of game, and play sounds
+        :return: None
+        """
         self.prev_board = self.board
         eps_moved_made = False
         for i, row in enumerate(self.board):
@@ -531,7 +592,7 @@ class Engine:
             create_FEN(self.board, self.turn, self.castle_rights, self.en_passant_square, self.fullmove_number))
         self.stockfish.set_fen_position(self.game_fens[-1])
         # print(self.game_fens[-1])
-        if not self.player_vs_ai and not self.ai_vs_ai:
+        if not self.player_vs_ai and not self.ai_vs_ai and self.flip_enabled:
             self.flip_board()
 
         if self.node.board().is_repetition():
@@ -563,7 +624,12 @@ class Engine:
                 self.end_game("CHECKMATE BLACK WINS !!")
         # pprint(self.board, indent=3)
 
-    def end_game(self, end_text):
+    def end_game(self, end_text: str) -> None:
+        """
+        Called when the game has ended. Saves the game in 'data/games/' and displays the end game menu
+        :param end_text: string of the end of match. i.e. "Checkmate White Wins!"
+        :return: None
+        """
         self.game_just_ended = True
         dt = datetime.datetime.now()
         dt = dt.strftime("%Y%m%d_%H%M%S_%f")
@@ -573,13 +639,17 @@ class Engine:
         self.reset_game()
 
         # End game screen
-        self.end_game_menu = EndGameMenu(title='Game Over', width=self.screen.get_width(), height=self.screen.get_height(),
-                                     surface=self.screen, parent=self, theme=pm.themes.THEME_DARK)
+        self.end_game_menu = EndGameMenu(title='Game Over', width=self.screen.get_width(),
+                                         height=self.screen.get_height(),
+                                         surface=self.screen, parent=self, theme=pm.themes.THEME_DARK)
         self.end_game_menu.set_file_path_and_text("data/games/" + dt + ".pgn", end_text)
         self.end_game_menu.run()
 
-
-    def reset_game(self):
+    def reset_game(self) -> None:
+        """
+        Resets the game to the starting FEN position
+        :return: None
+        """
         self.updates_kill()
         self.board, self.turn, self.castle_rights, self.en_passant_square, self.halfmoves_since_last_capture, self.fullmove_number = parse_FEN(
             self.game_fens[0])
@@ -626,11 +696,15 @@ class Engine:
         self.game.headers["WhiteElo"] = "?"
         self.game.headers["BlackElo"] = "?"
         self.node = self.game
-        self.stockfish.set_fen_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
-        # self.update_board()
+        self.stockfish.set_fen_position(self.game_fens[0])
         self.update_legal_moves()
 
-    def undo_move(self, one):
+    def undo_move(self, one: bool) -> None:
+        """
+        Undo last move, and update legal moves
+        :param one: Is the length of the game ONLY ONE move?
+        :return: None
+        """
         if len(self.last_move) > 0:
             if one:
                 self.board, self.turn, self.castle_rights, self.en_passant_square, self.halfmoves_since_last_capture, self.fullmove_number = parse_FEN(
@@ -660,14 +734,18 @@ class Engine:
                 piece.change_type(self.piece_type)
             self.last_move.pop()
             self.node = self.node.parent  # allows for undoes to show in analysis on https://chess.com/analysis
-            if not self.player_vs_ai and not self.ai_vs_ai:
+            if not self.player_vs_ai and not self.ai_vs_ai and self.flip_enabled:
                 self.flip_board()
 
             self.update_board()
             self.update_legal_moves()
 
     # @timeit
-    def update_legal_moves(self):
+    def update_legal_moves(self) -> bool:
+        """
+        Update the all legal moves
+        :return: True if in check, false if not in check
+        """
         castle = []
         in_check = False
         for piece in self.all_pieces:
@@ -708,7 +786,13 @@ class Engine:
                     piece.trim_pin_moves(self.board)
         return in_check
 
-    def make_move_board(self, move, piece):
+    def make_move_board(self, move: tuple, piece: Piece) -> None:
+        """
+        Make the move on the board, and call "piece.make_move()" and "moved()" to handle sounds and end game checks
+        :param move: square the piece is moving to
+        :param piece: The piece that is moving
+        :return: None
+        """
         if self.board[piece.position[0]][piece.position[1]].make_move(self.board, self.offset, self.turn, self.flipped,
                                                                       piece.position[1] + move[0],
                                                                       piece.position[0] + move[1]):
@@ -720,7 +804,13 @@ class Engine:
             self.moved()
             self.board[piece.position[0]][piece.position[1]].clicked = False
 
-    def engine_make_move(self, move):
+    def engine_make_move(self, move: str) -> None:
+        """
+        Engine makes the move. Used for AI moves where move notation is for example "a2a4" or "f1e3".
+        This function is similar to "make_move_board".
+        :param move: Move to make. e.g. "a2a4" or "f1e3"
+        :return: None
+        """
         try:
             square1 = square_on(move[0:2])
             square2 = square_on(move[2:4])
@@ -735,10 +825,16 @@ class Engine:
                     self.turn = 'w'
                 self.moved()
                 self.board[piece.position[0]][piece.position[1]].clicked = False
+
         except:
             pass
 
-    def create_map(self, pieces):
+    def create_map(self, pieces: list[Piece]) -> list[tuple]:
+        """
+        Returns a list of squares the pieces attack
+        :param pieces: list of pieces to check attacking squares
+        :return: list of the attacked squares
+        """
         map = set()
         for piece in pieces:
             piece.update_legal_moves(self.board, '-', captures=True)
@@ -746,7 +842,11 @@ class Engine:
                 map.add((piece.position[0] + move[1], piece.position[1] + move[0]))
         return list(map)
 
-    def count_legal_moves(self):
+    def count_legal_moves(self) -> int:
+        """
+        Get the number of legal moves
+        :return: Number of legal moves
+        """
         count = 0
         for i, row in enumerate(self.board):
             for j, piece in enumerate(row):
@@ -755,7 +855,12 @@ class Engine:
                         count += len(piece.legal_positions)
         return count
 
-    def promotion(self, piece):
+    def promotion(self, piece: Piece) -> None:
+        """
+        Promote the given piece to a queen
+        :param piece: A piece to promote
+        :return: None
+        """
         self.all_pieces.remove(piece)
         self.board[piece.position[0]][piece.position[1]] = Queen(position=(piece.position[0], piece.position[1]),
                                                                  colour=piece.colour, piece_type=self.piece_type)
@@ -767,7 +872,12 @@ class Engine:
             self.white_pieces.remove(piece)
             self.white_pieces.add(self.board[piece.position[0]][piece.position[1]])
 
-    def handle_fen_castle(self, castle):
+    def handle_fen_castle(self, castle: list[str]) -> None:
+        """
+        Update castle rights
+        :param castle: either ["black", "white"], ["black"], or ["white"]
+        :return: None
+        """
         if 'black' in castle and 'white' in castle:
             self.castle_rights = 'KQkq'
         elif 'black' in castle:
@@ -817,19 +927,31 @@ class Engine:
         if self.castle_rights == '':
             self.castle_rights = '-'
 
-    def click_right(self):
+    def click_right(self) -> None:
+        """
+        handle Right click event. Stores the co-ordinates of the click. Used for highlighting and arrows
+        :return: None
+        """
         self.txr = int((pg.mouse.get_pos()[0] - self.offset[0]) // self.size)
         self.tyr = int((pg.mouse.get_pos()[1] - self.offset[1]) // self.size)
         if self.flipped:
             self.txr = 7 - self.txr
             self.tyr = 7 - self.tyr
 
-    def click(self):
+    def click_left(self) -> None:
+        """
+        Handle left click event. Stores co-ordinates of mouse and sets updates to true to enable drawing of clicked piece.
+        :return: None
+        """
         self.tx = int((pg.mouse.get_pos()[0] - self.offset[0]) // self.size)
         self.ty = int((pg.mouse.get_pos()[1] - self.offset[1]) // self.size)
         self.updates = True
 
-    def update_board(self):  # is currently clicking a piece?
+    def update_board(self) -> None:
+        """
+        If currently clicking a piece then update the pieces positions
+        :return: None
+        """
         try:
             if not self.flipped:
                 if -1 < self.tx < 8 and -1 < self.ty < 8:
@@ -844,7 +966,11 @@ class Engine:
         except:
             pass
 
-    def draw_board(self):
+    def draw_board(self) -> None:
+        """
+        Draw the board, with highlighted squares and last moves. Draw numbers on the sides of the board.
+        :return: None
+        """
         self.screen.blit(self.background, (0, 0))
         self.screen.blit(self.board_background, (self.offset[0], self.offset[1]))
         square1 = None
@@ -868,7 +994,8 @@ class Engine:
                 surface.set_alpha(200)
                 if self.debug and (row_new, col_new) in self.map:
                     surface.fill(self.colours2[count % 2])
-                    self.screen.blit(surface, (self.offset[0] + self.size * col_new, self.offset[1] + self.size * row_new))
+                    self.screen.blit(surface,
+                                     (self.offset[0] + self.size * col_new, self.offset[1] + self.size * row_new))
                 else:
                     if (row, col) in self.highlighted:
                         surface.fill(self.colours4[count % 2])
@@ -921,13 +1048,19 @@ class Engine:
                 surface = self.font.render('Hint: ' + self.best_move, False, (255, 255, 255))
                 self.screen.blit(surface, (self.screen.get_width() - surface.get_width() - 10, 20))
 
-    def draw_pieces(self, piece_selected=None):
+    def draw_pieces(self, piece_selected: Piece = None):
+        """
+        Draws all the pieces and the selected piece last so that it appears on top.
+        Also draws the arrows.
+        :param piece_selected:
+        :return:
+        """
         for piece in self.all_pieces:
             if piece != piece_selected:
                 piece.draw(self.offset, self.screen, self.size, self.flipped)
 
         # Draw the piece last, if it is being clicked/dragged
-        if piece_selected != None:
+        if piece_selected is not None:
             piece_selected.draw(self.offset, self.screen, self.size, False)
 
         self.draw_arrows()
@@ -954,4 +1087,3 @@ class Engine:
 
     def flip_board(self):
         self.flipped = not self.flipped
-

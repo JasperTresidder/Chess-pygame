@@ -1,9 +1,7 @@
 import os
 
 import pygame_menu as pm
-import pygame as pg
 from pygame_menu.controls import Controller
-import sys
 
 
 class SettingsMenu(pm.menu.Menu):
@@ -236,6 +234,8 @@ class EndGameMenu(pm.menu.Menu):
 
     def exit_menu(self):
         self.disable()
+        if self.resized:
+            self.parent.check_resize()
 
 
 
