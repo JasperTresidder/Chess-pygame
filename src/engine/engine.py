@@ -50,6 +50,7 @@ class Engine:
         self.arrows = []
         self.flipped = False
         self.flip_enabled = True
+        self.sound_enabled = True
         self.platform = None
         if 'Windows' in platform.platform():
             self.platform = 'Windows/' + self.engine + '.exe'
@@ -559,13 +560,13 @@ class Engine:
                                 self.promotion(piece)
                                 promote = True
 
-                        if castle or promote:
+                        if (castle or promote) and self.sound_enabled:
                             pg.mixer.music.load('data/sounds/castle.mp3')
                             pg.mixer.music.play(1)
-                        elif piece_sound == ' ' and not eps_moved_made:
+                        elif piece_sound == ' ' and not eps_moved_made and self.sound_enabled:
                             pg.mixer.music.load('data/sounds/move.mp3')
                             pg.mixer.music.play(1)
-                        else:
+                        elif self.sound_enabled:
                             pg.mixer.music.load('data/sounds/capture.mp3')
                             pg.mixer.music.play(1)
 
@@ -581,7 +582,7 @@ class Engine:
                 self.white_pieces.remove(p)
 
         # update next players legal moves
-        if self.update_legal_moves():
+        if self.update_legal_moves() and self.sound_enabled:
             pg.mixer.music.load('data/sounds/check.aiff')
             pg.mixer.music.play(1)
 
@@ -596,28 +597,32 @@ class Engine:
             self.flip_board()
 
         if self.node.board().is_repetition():
-            pg.mixer.music.load('data/sounds/mate.wav')
-            pg.mixer.music.play(1)
-            time.sleep(0.15)
-            pg.mixer.music.play(1)
+            if self.sound_enabled:
+                pg.mixer.music.load('data/sounds/mate.wav')
+                pg.mixer.music.play(1)
+                time.sleep(0.15)
+                pg.mixer.music.play(1)
             self.end_game("DRAW BY REPETITION")
         elif self.node.board().is_stalemate():
-            pg.mixer.music.load('data/sounds/mate.wav')
-            pg.mixer.music.play(1)
-            time.sleep(0.15)
-            pg.mixer.music.play(1)
+            if self.sound_enabled:
+                pg.mixer.music.load('data/sounds/mate.wav')
+                pg.mixer.music.play(1)
+                time.sleep(0.15)
+                pg.mixer.music.play(1)
             self.end_game("INSUFFICIENT MATERIAL")
         elif self.node.board().is_insufficient_material():
-            pg.mixer.music.load('data/sounds/mate.wav')
-            pg.mixer.music.play(1)
-            time.sleep(0.15)
-            pg.mixer.music.play(1)
+            if self.sound_enabled:
+                pg.mixer.music.load('data/sounds/mate.wav')
+                pg.mixer.music.play(1)
+                time.sleep(0.15)
+                pg.mixer.music.play(1)
             self.end_game("INSUFFICIENT MATERIAL")
         elif self.node.board().is_checkmate() or legal_moves == 0:
-            pg.mixer.music.load('data/sounds/mate.wav')
-            pg.mixer.music.play(1)
-            time.sleep(0.15)
-            pg.mixer.music.play(1)
+            if self.sound_enabled:
+                pg.mixer.music.load('data/sounds/mate.wav')
+                pg.mixer.music.play(1)
+                time.sleep(0.15)
+                pg.mixer.music.play(1)
             if self.node.board().outcome().winner:
                 self.end_game("CHECKMATE WHITE WINS !!")
             else:
@@ -1084,6 +1089,12 @@ class Engine:
             self.flip_enabled = True
         else:
             self.flip_enabled = False
+
+    def sounds_enable(self, value):
+        if value == 1:
+            self.sound_enabled = True
+        else:
+            self.sound_enabled = False
 
     def flip_board(self):
         self.flipped = not self.flipped

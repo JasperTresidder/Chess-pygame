@@ -87,6 +87,10 @@ class SettingsMenu(pm.menu.Menu):
         self.flip = self.add.toggle_switch('', int(lines[4]), cursor=11)
         self.flip.set_controller(custom_controller)
 
+        self.label3 = self.add.label('Sounds:')
+        self.sounds = self.add.toggle_switch('', int(lines[5]), cursor=11)
+        self.sounds.set_controller(custom_controller)
+
 
         self.label3 = self.add.label('Pieces:')
         self.piece = self.add.dropselect('', self.pieces, int(lines[1].replace('\n', '')), selection_box_width=350, selection_option_font_size=None, placeholder='Select Piece Type', selection_box_height=6, cursor=11)
@@ -126,12 +130,14 @@ class SettingsMenu(pm.menu.Menu):
         self.parent.change_board(self.board.get_value()[0][1])
         self.parent.change_ai_strength(self.strength.get_value()[0][1])
         self.parent.flip_enable(int(self.flip.get_value()))
+        self.parent.sounds_enable(int(self.sounds.get_value()))
         with open('data/settings/settings.txt', 'w') as file:
             file.writelines(str(self.mode.get_index())+'\n')
             file.writelines(str(self.piece.get_index())+'\n')
             file.writelines(str(self.board.get_index())+'\n')
             file.writelines(str(self.strength.get_index())+'\n')
             file.writelines(str(int(self.flip.get_value()))+'\n')
+            file.writelines(str(int(self.sounds.get_value()))+'\n')
         self.mode.get_index()
         self.exit_menu()
 
