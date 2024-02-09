@@ -56,6 +56,8 @@ class Engine:
             self.platform = 'Windows/' + self.engine + '.exe'
         if 'macOS' in platform.platform():
             self.platform = 'macOS/stockfish'
+        if 'Linux' in platform.platform():
+            self.platform = 'Linux/stockfish'
         print("lit/" + self.engine + "/" + self.platform)
         if self.ai_vs_ai:
             try:
