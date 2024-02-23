@@ -2,7 +2,9 @@ from .base import Piece
 import pygame as pg
 
 class Queen(Piece):
+    """Queen Piece"""
     def __init__(self, position, colour, piece_type=None, *args, **kwargs):
+        """Initialize the Queen class"""
         super().__init__(*args, *kwargs)
         self.legal_directions = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (-1, 1), (1, -1)]
         self.colour = colour
@@ -18,6 +20,7 @@ class Queen(Piece):
             "data/img/pieces/" + self.piece_set + "/" + colour[0] + self.piece.lower() + ".png").convert_alpha()
 
     def update_legal_moves(self, board, eps, captures):
+        """Calculate the legal moves"""
         self.legal_positions = []
         x = self.position[1]
         y = self.position[0]

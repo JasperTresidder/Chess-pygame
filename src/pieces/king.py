@@ -3,7 +3,9 @@ import pygame as pg
 
 
 class King(Piece):
+    """King Piece"""
     def __init__(self, position, colour, castling_rights, *args, **kwargs):
+        """Initialize the King class"""
         super().__init__(*args, *kwargs)
         self.castling_rights = castling_rights
         self.legal_directions = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (-1, 1), (1, -1)]
@@ -17,6 +19,7 @@ class King(Piece):
             "data/img/pieces/" + self.piece_set + "/" + colour[0] + self.piece.lower() + ".png").convert_alpha()
 
     def update_legal_moves(self, board, eps, captures):
+        """Calculate the legal moves"""
         self.legal_positions = []
         x = self.position[1]
         y = self.position[0]
@@ -55,7 +58,7 @@ class King(Piece):
                 pass
 
     def trim_checks(self, board, turn, map, in_check):
-        # todo : cant move to a square controlled by enemy.
+        """Trim legal moves based on Checks"""
 
         updated_moves = []
         for move in self.legal_positions:

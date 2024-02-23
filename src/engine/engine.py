@@ -158,7 +158,6 @@ class Engine:
                                                          (self.size * 8, self.size * 8))
         self.offset = [pg.display.get_window_size()[0] / 2 - 4 * self.size,
                        pg.display.get_window_size()[1] / 2 - 4 * self.size]
-        # self.update_board()
         self.update_legal_moves()
         self.prev_board = self.board
         self.debug = False
@@ -283,7 +282,6 @@ class Engine:
         self.stockfish.set_depth(99)
         return eve
 
-    # @timeit
     def un_click_left(self) -> None:
         """
         Left click release event logic. Calls make_move which makes a move if it is legal
@@ -351,7 +349,7 @@ class Engine:
         """
         self.piece_type = piece_type
         for piece in self.all_pieces:
-            piece.change_type(piece_type)
+            piece.change_piece_set(piece_type)
 
     def change_board(self, board_type):
         """
@@ -679,7 +677,7 @@ class Engine:
                 except:
                     pass
         for piece in self.all_pieces:
-            piece.change_type(self.piece_type)
+            piece.change_piece_set(self.piece_type)
             piece.clicked = False
         self.last_move = []
         self.game = chess.pgn.Game()
@@ -738,7 +736,7 @@ class Engine:
                     except:
                         pass
             for piece in self.all_pieces:
-                piece.change_type(self.piece_type)
+                piece.change_piece_set(self.piece_type)
             self.last_move.pop()
             self.node = self.node.parent  # allows for undoes to show in analysis on https://chess.com/analysis
             if not self.player_vs_ai and not self.ai_vs_ai and self.flip_enabled:
@@ -956,20 +954,22 @@ class Engine:
 
     def update_board(self) -> None:
         """
-        If currently clicking a piece then update the pieces positions
+        If currently clicking a piece then update the pieces positions and show the legal moves
         :return: None
         """
         try:
             if not self.flipped:
                 if -1 < self.tx < 8 and -1 < self.ty < 8:
                     if self.board[self.ty][self.tx] != ' ':
-                        self.board[self.ty][self.tx].update(self.screen, self.offset, self.turn, self.flipped,
-                                                            self.board)
+                        self.board[self.ty][self.tx].clicked = True
+                        self.board[self.ty][self.tx].show_legal_moves(self.screen, self.offset, self.turn, self.flipped,
+                                                                      self.board)
             else:
                 if -1 < self.tx < 8 and -1 < self.ty < 8:
                     if self.board[-self.ty + 7][-self.tx + 7] != ' ':
-                        self.board[-self.ty + 7][-self.tx + 7].update(self.screen, self.offset, self.turn, self.flipped,
-                                                                      self.board)
+                        self.board[-self.ty + 7][-self.tx + 7].clicked = True
+                        self.board[-self.ty + 7][-self.tx + 7].show_legal_moves(self.screen, self.offset, self.turn,
+                                                                                self.flipped, self.board)
         except:
             pass
 

@@ -9,6 +9,7 @@ board_letters = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
 
 
 def create_FEN(board, turn, castle_rights, en_p_s, fmn):
+    """Construct FEN string from board state"""
     fen_string = ''
     for row in range(8):
         blanks = 0
@@ -39,6 +40,7 @@ def create_FEN(board, turn, castle_rights, en_p_s, fmn):
 
 
 def take_one(moves: str):
+    """Undo move from PNG format file"""
     move_array = moves.split(' ')
     if move_array[-2][1] == '.':
         move_array.pop()
@@ -52,6 +54,7 @@ def take_one(moves: str):
 
 
 def square_on(number):
+    """Convert notation to board index. e.g. a1 -> (7, 0)"""
     return tuple((7 - (int(number[1]) - 1), int(board_letters.index(number[0]))))
 
 
@@ -59,22 +62,8 @@ def translate_move(r, c, x, y):
     return board_letters[c] + str(8 - r) + board_letters[y] + str(8 - x)
 
 
-def FEN_to_board(fen_string):
-    board = [[] for i in range(8)]
-    fen_list = fen_string.split(' ')
-    piece_placement_list = fen_list[0].split('/')
-    for i, row in enumerate(piece_placement_list):
-        for char in row:
-            if char.isdigit():
-                for k in range(int(char)):
-                    board[i].append(' ')
-            else:
-                board[i].append(char)
-    # board.reverse()
-    return board
-
-
 def parse_FEN(fen_string):
+    """Parse the fen string and create board"""
     board = [[] for i in range(8)]
     fen_list = fen_string.split(' ')
     piece_placement_list = fen_list[0].split('/')

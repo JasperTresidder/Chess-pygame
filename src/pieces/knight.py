@@ -2,7 +2,9 @@ from .base import Piece
 import pygame as pg
 
 class Knight(Piece):
+    """Knight Piece"""
     def __init__(self, position, colour, *args, **kwargs):
+        """Initialize the Knight class"""
         super().__init__(*args, *kwargs)
         self.legal_directions = [(2, 1), (2, -1), (1, 2), (1, -2), (-1, 2), (-1, -2), (-2, 1), (-2, -1)]
         self.colour = colour
@@ -15,6 +17,7 @@ class Knight(Piece):
             "data/img/pieces/" + self.piece_set + "/" + colour[0] + self.piece.lower() + ".png").convert_alpha()
 
     def update_legal_moves(self, board, eps, captures):
+        """Calculate the legal moves"""
         self.legal_positions = []
         x = self.position[1]
         y = self.position[0]
@@ -31,6 +34,7 @@ class Knight(Piece):
                 continue
 
     def check(self, board):
+        """Can piece capture the opponents king"""
         self.checks = []
         x = self.position[1]
         y = self.position[0]

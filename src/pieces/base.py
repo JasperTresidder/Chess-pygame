@@ -6,7 +6,9 @@ import pygame as pg
 from pygame import sprite
 
 class Piece(sprite.Sprite):
+    """Base class for all pieces"""
     def __init__(self):
+        """Initialize the piece"""
         super().__init__()
         self.piece_set = 'chessmonk'
         self.dead = False
@@ -25,12 +27,12 @@ class Piece(sprite.Sprite):
         self.picture = None
 
     def click(self):
+        """Piece is currently being clicked"""
         self.clicked = True
 
-    def update(self, screen, offset, turn, flipped, board):
-        #find and draw legal moves.
-        # move the piece under the mouse
-        self.clicked = True
+    def show_legal_moves(self, screen, offset, turn, flipped, board):
+        """If piece is clicked show legal moves"""
+
         for i in self.legal_positions:
             if board[(self.position[0] + i[1])][(self.position[1] + i[0])] == ' ':
                 if -1 < (self.position[1] + i[0]) < 8 and -1 < (self.position[0] + i[1]) < 8 and turn == self.colour[0]:
@@ -46,9 +48,11 @@ class Piece(sprite.Sprite):
                         pg.draw.rect(screen, (237, 109, 100), ((-self.position[1]+7 - i[0])*self.size + offset[0] + self.size/6, (-self.position[0]+7 - i[1])*self.size + offset[1] + self.size/6, 2*self.size/3, 2*self.size/3), border_radius=int(self.size/8))
 
     def update_legal_moves(self, board, eps=None, captures=False):
+        """Refresh legal moves"""
         pass
 
     def check(self, board):
+        """Can piece capture the opponents king"""
         self.checks = []
         x = self.position[1]
         y = self.position[0]
@@ -75,6 +79,7 @@ class Piece(sprite.Sprite):
         return False
 
     def trim_checks(self, board, turn, map=None, in_check=False):
+        """Trim legal moves based on Checks"""
         updated_moves = []
         for i, row in enumerate(board):
             for j, piece in enumerate(row):
@@ -91,6 +96,7 @@ class Piece(sprite.Sprite):
                                 self.legal_positions = updated_moves
 
     def pin_line_update(self, board):
+        """Calculate pieces in pinned positions"""
         self.pin_lines.clear()
         x = self.position[1]
         y = self.position[0]
@@ -125,6 +131,7 @@ class Piece(sprite.Sprite):
         #     print(self.piece, self.position, self.pin_lines)
 
     def trim_pin_moves(self, board):
+        """Trim legal moves based on Pins"""
         x = self.position[1]
         y = self.position[0]
         for pin in self.pin_lines:
@@ -139,8 +146,8 @@ class Piece(sprite.Sprite):
             except:
                 continue
 
-
     def make_move(self, board, offset, turn, flipped, i=None, j=None):
+        """Move the pieces position on the board if legal"""
         # ai move's using i amd j
         if i == None:
             x = int((pg.mouse.get_pos()[0] - offset[0]) // self.size)
@@ -151,7 +158,7 @@ class Piece(sprite.Sprite):
         if flipped and i is None:
             x = -x+7
             y = -y+7
-
+        # if the piece moved is in a legal position then make the move
         if (x - self.position[1], y - self.position[0]) in self.legal_positions and self.colour[0] == turn:
             self.position = (y, x)
             self.has_moved = True
@@ -160,6 +167,7 @@ class Piece(sprite.Sprite):
             return False
 
     def draw(self, offset, screen, size, flipped):
+        """Draw the current piece"""
         self.size = size
         if self.picture.get_size() != (self.size, self.size):
             self.picture = pg.image.load(
@@ -178,13 +186,15 @@ class Piece(sprite.Sprite):
                 screen.blit(self.picture,
                             (offset[0] + self.size * (-self.position[1]+7), offset[1] + self.size * (-self.position[0]+7)))
 
-    def change_type(self, piece_type):
+    def change_piece_set(self, piece_type):
+        """Change piece set"""
         self.piece_set = piece_type
         self.picture = pg.image.load(
             "data/img/pieces/" + self.piece_set + "/" + self.colour[0] + self.piece.lower() + ".png").convert_alpha()
         self.picture = pg.transform.smoothscale(self.picture, (self.size, self.size))
 
     def __del__(self):
+        """Delete the piece"""
         self.dead = True
         self.clicked = False
         self.kill()

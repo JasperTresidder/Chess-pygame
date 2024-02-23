@@ -2,7 +2,9 @@ from .base import Piece
 import pygame as pg
 
 class Rook(Piece):
+    """Rook Piece"""
     def __init__(self, position, colour, *args, **kwargs):
+        """Initialize the Rook class"""
         super().__init__(*args, *kwargs)
         self.legal_directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
         self.colour = colour
@@ -16,6 +18,7 @@ class Rook(Piece):
             "data/img/pieces/" + self.piece_set + "/" + colour[0] + self.piece.lower() + ".png").convert_alpha()
 
     def update_legal_moves(self, board, eps, captures):
+        """Calculate the legal moves"""
         self.legal_positions = []
         x = self.position[1]
         y = self.position[0]

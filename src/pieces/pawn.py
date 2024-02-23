@@ -3,7 +3,9 @@ import pygame as pg
 
 
 class Pawn(Piece):
+    """Pawn Piece"""
     def __init__(self, position, colour, has_moved=False, *args, **kwargs):
+        """Initialize the Pawn class"""
         super().__init__(*args, *kwargs)
         self.has_moved = has_moved
         self.colour = colour
@@ -20,6 +22,7 @@ class Pawn(Piece):
             "data/img/pieces/" + self.piece_set + "/" + colour[0] + self.piece.lower() + ".png").convert_alpha()
 
     def update_legal_moves(self, board, eps, captures):
+        """Calculate the legal moves"""
         self.legal_positions = []
 
         # move forward logic
@@ -67,6 +70,7 @@ class Pawn(Piece):
                                                  self.position[0] - int(eps[1])))
 
     def check(self, board):
+        """Can piece capture the opponents king"""
         self.checks = []
         x = self.position[1] + 1
         y = self.position[0] + self.direction
