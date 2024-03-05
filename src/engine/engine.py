@@ -1,4 +1,5 @@
 import datetime
+import math
 import random
 import sys
 import time
@@ -163,6 +164,7 @@ class Engine:
         self.debug = False
         self.node = self.game
         self.show_numbers = True
+        self.knight_moves = [(1, 2), (1, -2), (-1, 2), (-1, -2), (2, 1), (2, -1), (-2, 1), (-2, -1)]
         if EVAL_ON:
             self.get_eval()
         self.clock = pg.time.Clock()
@@ -278,9 +280,9 @@ class Engine:
         :return: Evaluation string
         """
         self.stockfish.set_depth(20)
-        eve = print_eval(self.stockfish.get_evaluation())
+        evaluation = print_eval(self.stockfish.get_evaluation())
         self.stockfish.set_depth(99)
-        return eve
+        return evaluation
 
     def un_click_left(self) -> None:
         """
@@ -294,52 +296,56 @@ class Engine:
             if EVAL_ON:
                 self.get_eval()
         else:
-            for row in range(8):
-                for col in range(8):
-                    if self.board[row][col] != ' ':
-                        if self.board[row][col].clicked:
-                            # Make move if legal
-                            if self.board[row][col].make_move(self.board, self.offset, self.turn, self.flipped, None,
-                                                              None):
-                                x = int((pg.mouse.get_pos()[0] - self.offset[0]) // self.size)
-                                y = int((pg.mouse.get_pos()[1] - self.offset[1]) // self.size)
-                                if self.flipped:
-                                    x = -x + 7
-                                    y = -y + 7
-                                if self.turn == 'w':
-                                    self.turn = 'b'
+            for piece in self.all_pieces:
+                row = piece.position[0]
+                col = piece.position[1]
+                if self.board[row][col] != ' ':
+                    if self.board[row][col].clicked:
+                        # Make move if legal
+                        if self.board[row][col].make_move(self.board, self.offset, self.turn, self.flipped, None,
+                                                          None):
+                            x = int((pg.mouse.get_pos()[0] - self.offset[0]) // self.size)
+                            y = int((pg.mouse.get_pos()[1] - self.offset[1]) // self.size)
+                            if self.flipped:
+                                x = -x + 7
+                                y = -y + 7
+                            if self.turn == 'w':
+                                self.turn = 'b'
+                                move = translate_move(row, col, y, x)
+                                if self.board[row][col] != ' ':
+                                    if self.board[row][col].piece == 'P':
+                                        if y == 0:
+                                            move += 'q'
+
+                                # add move to chess.pgn node
+                                self.last_move.append(move)
+                                self.node = self.node.add_variation(chess.Move.from_uci(move))
+                            elif self.turn == 'b':
+                                self.fullmove_number += 1
+                                self.turn = 'w'
+                                if not self.player_vs_ai:
                                     move = translate_move(row, col, y, x)
                                     if self.board[row][col] != ' ':
-                                        if self.board[row][col].piece == 'P':
-                                            if y == 0:
+                                        if self.board[row][col].piece == 'p':
+                                            if y == 7:
                                                 move += 'q'
+
+                                    # add move to chess.pgn node
                                     self.last_move.append(move)
                                     self.node = self.node.add_variation(chess.Move.from_uci(move))
-                                else:
-                                    self.fullmove_number += 1
-                                    self.turn = 'w'
-                                    if not self.player_vs_ai:
-                                        move = translate_move(row, col, y, x)
-                                        if self.board[row][col] != ' ':
-                                            if self.board[row][col].piece == 'p':
-                                                if y == 7:
-                                                    move += 'q'
 
-                                        self.last_move.append(move)
-                                        self.node = self.node.add_variation(chess.Move.from_uci(move))
-
-                                self.moved()
-                                if self.board[y][x] != ' ':
-                                    self.board[y][x].clicked = False
+                            self.moved()
+                            if self.board[y][x] != ' ':
+                                self.board[y][x].clicked = False
+                            if EVAL_ON:
+                                self.get_eval()
+                            if self.player_vs_ai:
+                                self.ai_make_move(y, row, col)
                                 if EVAL_ON:
                                     self.get_eval()
-                                if self.player_vs_ai:
-                                    self.ai_make_move(y, row, col)
-                                    if EVAL_ON:
-                                        self.get_eval()
-                            else:
-                                self.board[row][col].clicked = False
-                            break
+                        else:
+                            self.board[row][col].clicked = False
+                        break
 
     def change_pieces(self, piece_type: str) -> None:
         """
@@ -745,7 +751,6 @@ class Engine:
             self.update_board()
             self.update_legal_moves()
 
-    # @timeit
     def update_legal_moves(self) -> bool:
         """
         Update the all legal moves
@@ -1075,15 +1080,123 @@ class Engine:
     def draw_arrows(self):
         off = (self.offset[0] + self.size / 2, self.offset[1] + self.size / 2)
         for start, end in self.arrows:
+            diff = (end[0] - start[0], end[1] - start[1])
             surface = pg.Surface((pg.display.get_window_size()[0], pg.display.get_window_size()[1]), pg.SRCALPHA)
             surface.set_alpha(200)
-            if self.flipped:
-                pg.draw.line(surface, self.arrow_colour,
-                             (off[0] + self.size * (7 - start[1]), off[1] + self.size * (7 - start[0])),
-                             (off[0] + self.size * (7 - end[1]), off[1] + self.size * (7 - end[0])), 10)
+            angle = math.atan2(((off[1] + self.size * start[0]) - (off[1] + self.size * end[0])),
+                               ((off[0] + self.size * start[1]) - (off[0] + self.size * end[1])))
+            # Knight arrows !
+            if diff in self.knight_moves:
+                if diff[0] in [2, -2]:
+                    if self.flipped:
+                        pg.draw.line(surface, self.arrow_colour,
+                                     (off[0] + self.size * (7 - start[1]), off[1] + self.size * (7 - start[0])),
+                                     (off[0] + self.size * (7 - start[1]), off[1] + self.size * (7 - start[0] - diff[0]) - (0.5*diff[0]*(int(self.size/6)/2))),
+                                     int(self.size / 6))
+                        pg.draw.line(surface, self.arrow_colour,
+                                     (off[0] + self.size * (7 - start[1]),
+                                      off[1] + self.size * (7 - start[0] - diff[0])),
+                                     (off[0] + self.size * (7 - start[1] - diff[1]) + self.size*diff[1]/5,
+                                      off[1] + self.size * (7 - start[0] - diff[0])),
+                                     int(self.size / 6))
+                        end_pos = (off[0] + self.size * (7 - start[1] - diff[1]),
+                                      off[1] + self.size * (7 - start[0] - diff[0]))
+                        angle = math.atan2(0, -diff[1])
+                        pg.draw.polygon(surface,
+                                        self.arrow_colour,
+                                        [end_pos,
+                                         (end_pos[0] - math.cos(angle + math.radians(30)) * self.size / 3,
+                                          end_pos[1] - math.sin(angle + math.radians(30)) * self.size / 3),
+                                         (end_pos[0] - math.cos(angle - math.radians(30)) * self.size / 3,
+                                          end_pos[1] - math.sin(angle - math.radians(30)) * self.size / 3)])
+                    else:
+                        pg.draw.line(surface, self.arrow_colour,
+                                     (off[0] + self.size * start[1], off[1] + self.size * start[0]),
+                                     (off[0] + self.size * start[1], off[1] + self.size * (start[0] + diff[0]) + (0.5*diff[0]*(int(self.size/6)/2))),
+                                     int(self.size / 6))
+                        pg.draw.line(surface, self.arrow_colour,
+                                     (off[0] + self.size * start[1], off[1] + self.size * (start[0] + diff[0])),
+                                     (off[0] + self.size * (start[1] + diff[1]) - self.size*diff[1]/5, off[1] + self.size * (start[0] + diff[0])),
+                                     int(self.size / 6))
+                        end_pos = (off[0] + self.size * (start[1] + diff[1]), off[1] + self.size * (start[0] + diff[0]))
+                        angle = math.atan2(0, diff[1])
+                        pg.draw.polygon(surface,
+                                        self.arrow_colour,
+                                        [end_pos,
+                                         (end_pos[0] - math.cos(angle + math.radians(30)) * self.size / 3,
+                                          end_pos[1] - math.sin(angle + math.radians(30)) * self.size / 3),
+                                         (end_pos[0] - math.cos(angle - math.radians(30)) * self.size / 3,
+                                          end_pos[1] - math.sin(angle - math.radians(30)) * self.size / 3)])
+
+                else:
+                    if self.flipped:
+                        pg.draw.line(surface, self.arrow_colour,
+                                     (off[0] + self.size * (7 - start[1]), off[1] + self.size * (7 - start[0])),
+                                     (off[0] + self.size * (7 - start[1] - diff[1]) - (0.5*diff[1]*(int(self.size/6)/2)),
+                                      off[1] + self.size * (7 - start[0])),
+                                     int(self.size / 6))
+                        pg.draw.line(surface, self.arrow_colour,
+                                     (off[0] + self.size * (7 - start[1] - diff[1]),
+                                      off[1] + self.size * (7 - start[0])),
+                                     (off[0] + self.size * (7 - start[1] - diff[1]),
+                                      off[1] + self.size * (7 - start[0] - diff[0]) + self.size*diff[0]/5),
+                                     int(self.size / 6))
+                        end_pos = (off[0] + self.size * (7 - start[1] - diff[1]),
+                                      off[1] + self.size * (7 - start[0] - diff[0]))
+                        angle = math.atan2(-diff[0], 0)
+                        pg.draw.polygon(surface,
+                                        self.arrow_colour,
+                                        [end_pos,
+                                         (end_pos[0] - math.cos(angle + math.radians(30)) * self.size / 3,
+                                          end_pos[1] - math.sin(angle + math.radians(30)) * self.size / 3),
+                                         (end_pos[0] - math.cos(angle - math.radians(30)) * self.size / 3,
+                                          end_pos[1] - math.sin(angle - math.radians(30)) * self.size / 3)])
+                    else:
+                        pg.draw.line(surface, self.arrow_colour,
+                                     (off[0] + self.size * start[1], off[1] + self.size * start[0]),
+                                     (off[0] + self.size * (start[1] + diff[1]) + (0.5*diff[1]*(int(self.size/6)/2)), off[1] + self.size * start[0]),
+                                     int(self.size / 6))
+                        pg.draw.line(surface, self.arrow_colour,
+                                     (off[0] + self.size * (start[1] + diff[1]), off[1] + self.size * start[0]),
+                                     (off[0] + self.size * (start[1] + diff[1]), off[1] + self.size * (start[0] + diff[0]) - self.size*diff[0]/5),
+                                     int(self.size / 6))
+                        end_pos = (off[0] + self.size * (start[1] + diff[1]), off[1] + self.size * (start[0] + diff[0]))
+                        angle = math.atan2(diff[0], 0)
+                        pg.draw.polygon(surface,
+                                        self.arrow_colour,
+                                        [end_pos,
+                                         (end_pos[0] - math.cos(angle + math.radians(30)) * self.size / 3,
+                                          end_pos[1] - math.sin(angle + math.radians(30)) * self.size / 3),
+                                         (end_pos[0] - math.cos(angle - math.radians(30)) * self.size / 3,
+                                          end_pos[1] - math.sin(angle - math.radians(30)) * self.size / 3)])
+            # all other arrows
             else:
-                pg.draw.line(surface, self.arrow_colour, (off[0] + self.size * start[1], off[1] + self.size * start[0]),
-                             (off[0] + self.size * end[1], off[1] + self.size * end[0]), 10)
+                if self.flipped:
+                    # angle = math.atan2(((off[0] + self.size * (7 - start[1])) - (off[0] + self.size * (7 - end[1]))), ((off[1] + self.size * (7 - start[0])) - (off[1] + self.size * (7 - end[0]))))
+                    pg.draw.line(surface, self.arrow_colour,
+                                 (off[0] + self.size * (7 - start[1]), off[1] + self.size * (7 - start[0])),
+                                 (off[0] + self.size * (7 - end[1]) - self.size*math.cos(angle)/5, off[1] + self.size * (7 - end[0]) - self.size*math.sin(angle)/5), int(self.size/6))
+                    end_pos = (off[0] + self.size * (7 - end[1]), off[1] + self.size * (7 - end[0]))
+                else:
+                    pg.draw.line(surface, self.arrow_colour, (off[0] + self.size * start[1], off[1] + self.size * start[0]),
+                                 (off[0] + self.size * end[1] + self.size*math.cos(angle)/5, off[1] + self.size * end[0] + self.size*math.sin(angle)/5),  int(self.size/6))
+                    end_pos = (off[0] + self.size * end[1], off[1] + self.size * end[0])
+                if self.flipped:
+                    pg.draw.polygon(surface,
+                                    self.arrow_colour,
+                                    [end_pos,
+                                     (end_pos[0] - math.cos(angle + math.radians(30)) * self.size / 3,
+                                      end_pos[1] - math.sin(angle + math.radians(30)) * self.size / 3),
+                                     (end_pos[0] - math.cos(angle - math.radians(30)) * self.size / 3,
+                                      end_pos[1] - math.sin(angle - math.radians(30)) * self.size / 3)])
+                else:
+                    pg.draw.polygon(surface,
+                                    self.arrow_colour,
+                                    [end_pos,
+                                     (end_pos[0] + math.cos(angle + math.radians(30)) * self.size / 3,
+                                      end_pos[1] + math.sin(angle + math.radians(30)) * self.size / 3),
+                                     (end_pos[0] + math.cos(angle - math.radians(30)) * self.size / 3,
+                                      end_pos[1] + math.sin(angle - math.radians(30)) * self.size / 3)])
             self.screen.blit(surface, (0, 0))
 
     def flip_enable(self, value):
