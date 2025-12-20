@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../../../../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>pychess API &#8212; Chess 1.0.0 documentation</title>
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=5ecbeea2" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/basic.css?v=686e5160" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/alabaster.css?v=27fed22d" />
+    <script src="../../../../_static/documentation_options.js?v=8d563738"></script>
+    <script src="../../../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="../../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../../search.html" />
+   
+  <link rel="stylesheet" href="../../../../_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <section id="pychess-api">
+<h1>pychess API<a class="headerlink" href="#pychess-api" title="Link to this heading">¶</a></h1>
+<div class="toctree-wrapper compound">
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="pychess.html">pychess package</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="pychess.html#subpackages">Subpackages</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="pychess.Database.html">pychess.Database package</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Database.html#submodules">Submodules</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Database.html#pychess-database-jvr-module">pychess.Database.JvR module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Database.html#pychess-database-pgnimport-module">pychess.Database.PgnImport module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Database.html#pychess-database-dbwalk-module">pychess.Database.dbwalk module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Database.html#pychess-database-model-module">pychess.Database.model module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Database.html#module-contents">Module contents</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="pychess.Players.html">pychess.Players package</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Players.html#submodules">Submodules</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Players.html#pychess-players-cecpengine-module">pychess.Players.CECPEngine module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Players.html#pychess-players-engine-module">pychess.Players.Engine module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Players.html#pychess-players-human-module">pychess.Players.Human module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Players.html#pychess-players-icplayer-module">pychess.Players.ICPlayer module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Players.html#pychess-players-player-module">pychess.Players.Player module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Players.html#pychess-players-protocolengine-module">pychess.Players.ProtocolEngine module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Players.html#pychess-players-pychess-module">pychess.Players.PyChess module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Players.html#pychess-players-pychesscecp-module">pychess.Players.PyChessCECP module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Players.html#pychess-players-pychessfics-module">pychess.Players.PyChessFICS module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Players.html#pychess-players-uciengine-module">pychess.Players.UCIEngine module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Players.html#pychess-players-enginenest-module">pychess.Players.engineNest module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Players.html#module-contents">Module contents</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="pychess.Savers.html">pychess.Savers package</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Savers.html#submodules">Submodules</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Savers.html#pychess-savers-chessfile-module">pychess.Savers.ChessFile module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Savers.html#pychess-savers-chessalpha2-module">pychess.Savers.chessalpha2 module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Savers.html#pychess-savers-chesspastebin-module">pychess.Savers.chesspastebin module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Savers.html#pychess-savers-database-module">pychess.Savers.database module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Savers.html#pychess-savers-epd-module">pychess.Savers.epd module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Savers.html#pychess-savers-fen-module">pychess.Savers.fen module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Savers.html#pychess-savers-pgn-module">pychess.Savers.pgn module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Savers.html#pychess-savers-png-module">pychess.Savers.png module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Savers.html#module-contents">Module contents</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="pychess.System.html">pychess.System package</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="pychess.System.html#submodules">Submodules</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.System.html#pychess-system-log-module">pychess.System.Log module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.System.html#pychess-system-logemitter-module">pychess.System.LogEmitter module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.System.html#pychess-system-subprocess-module">pychess.System.SubProcess module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.System.html#pychess-system-accordion-module">pychess.System.accordion module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.System.html#pychess-system-cairoextras-module">pychess.System.cairoextras module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.System.html#pychess-system-command-module">pychess.System.command module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.System.html#pychess-system-conf-module">pychess.System.conf module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.System.html#pychess-system-debug-module">pychess.System.debug module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.System.html#pychess-system-gst-player-module">pychess.System.gst_player module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.System.html#pychess-system-gstreamer-module">pychess.System.gstreamer module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.System.html#pychess-system-ping-module">pychess.System.ping module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.System.html#pychess-system-prefix-module">pychess.System.prefix module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.System.html#pychess-system-protoopen-module">pychess.System.protoopen module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.System.html#pychess-system-readuntil-module">pychess.System.readuntil module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.System.html#pychess-system-repeat-module">pychess.System.repeat module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.System.html#pychess-system-uistuff-module">pychess.System.uistuff module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.System.html#module-contents">Module contents</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="pychess.Utils.html">pychess.Utils package</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Utils.html#subpackages">Subpackages</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Utils.html#submodules">Submodules</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Utils.html#pychess-utils-engine-module">pychess.Utils.Engine module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Utils.html#pychess-utils-cord-module">pychess.Utils.Cord module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Utils.html#pychess-utils-endgametable-module">pychess.Utils.EndgameTable module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Utils.html#pychess-utils-gamemodel-module">pychess.Utils.GameModel module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Utils.html#pychess-utils-iconloader-module">pychess.Utils.IconLoader module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Utils.html#pychess-utils-move-module">pychess.Utils.Move module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Utils.html#pychess-utils-offer-module">pychess.Utils.Offer module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Utils.html#pychess-utils-piece-module">pychess.Utils.Piece module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Utils.html#pychess-utils-setupmodel-module">pychess.Utils.SetupModel module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Utils.html#pychess-utils-timemodel-module">pychess.Utils.TimeModel module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Utils.html#pychess-utils-book-module">pychess.Utils.book module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Utils.html#pychess-utils-checkversion-module">pychess.Utils.checkversion module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Utils.html#pychess-utils-const-module">pychess.Utils.const module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Utils.html#pychess-utils-eco-module">pychess.Utils.eco module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Utils.html#pychess-utils-elo-module">pychess.Utils.elo module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Utils.html#pychess-utils-eval-module">pychess.Utils.eval module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Utils.html#pychess-utils-isocountries-module">pychess.Utils.isoCountries module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Utils.html#pychess-utils-logic-module">pychess.Utils.logic module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Utils.html#pychess-utils-repr-module">pychess.Utils.repr module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Utils.html#module-contents">Module contents</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="pychess.Variants.html">pychess.Variants package</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#submodules">Submodules</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-asean-module">pychess.Variants.asean module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-asymmetricrandom-module">pychess.Variants.asymmetricrandom module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-atomic-module">pychess.Variants.atomic module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-blindfold-module">pychess.Variants.blindfold module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-bughouse-module">pychess.Variants.bughouse module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-corner-module">pychess.Variants.corner module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-crazyhouse-module">pychess.Variants.crazyhouse module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-euroshogi-module">pychess.Variants.euroshogi module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-fischerandom-module">pychess.Variants.fischerandom module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-giveaway-module">pychess.Variants.giveaway module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-horde-module">pychess.Variants.horde module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-kingofthehill-module">pychess.Variants.kingofthehill module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-knightodds-module">pychess.Variants.knightodds module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-losers-module">pychess.Variants.losers module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-normal-module">pychess.Variants.normal module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-pawnodds-module">pychess.Variants.pawnodds module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-pawnspassed-module">pychess.Variants.pawnspassed module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-pawnspushed-module">pychess.Variants.pawnspushed module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-queenodds-module">pychess.Variants.queenodds module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-racingkings-module">pychess.Variants.racingkings module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-randomchess-module">pychess.Variants.randomchess module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-rookodds-module">pychess.Variants.rookodds module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-seirawan-module">pychess.Variants.seirawan module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-setupposition-module">pychess.Variants.setupposition module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-shuffle-module">pychess.Variants.shuffle module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-suicide-module">pychess.Variants.suicide module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-theban-module">pychess.Variants.theban module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-threecheck-module">pychess.Variants.threecheck module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-upsidedown-module">pychess.Variants.upsidedown module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-wildcastle-module">pychess.Variants.wildcastle module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#pychess-variants-wildcastleshuffle-module">pychess.Variants.wildcastleshuffle module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.Variants.html#module-contents">Module contents</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="pychess.gfx.html">pychess.gfx package</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="pychess.gfx.html#submodules">Submodules</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.gfx.html#pychess-gfx-pieces-module">pychess.gfx.Pieces module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.gfx.html#module-contents">Module contents</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="pychess.ic.html">pychess.ic package</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="pychess.ic.html#subpackages">Subpackages</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.ic.html#submodules">Submodules</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.ic.html#pychess-ic-ficsconnection-module">pychess.ic.FICSConnection module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.ic.html#pychess-ic-ficsobjects-module">pychess.ic.FICSObjects module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.ic.html#pychess-ic-icgamemodel-module">pychess.ic.ICGameModel module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.ic.html#pychess-ic-iclogon-module">pychess.ic.ICLogon module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.ic.html#pychess-ic-timeseal-module">pychess.ic.TimeSeal module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.ic.html#pychess-ic-verbosetelnet-module">pychess.ic.VerboseTelnet module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.ic.html#module-contents">Module contents</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="pychess.perspectives.html">pychess.perspectives package</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="pychess.perspectives.html#subpackages">Subpackages</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.perspectives.html#module-contents">Module contents</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="pychess.widgets.html">pychess.widgets package</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#subpackages">Subpackages</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#submodules">Submodules</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-background-module">pychess.widgets.Background module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-boardcontrol-module">pychess.widgets.BoardControl module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-boardview-module">pychess.widgets.BoardView module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-borderbox-module">pychess.widgets.BorderBox module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-chainvbox-module">pychess.widgets.ChainVBox module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-channelspanel-module">pychess.widgets.ChannelsPanel module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-chatview-module">pychess.widgets.ChatView module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-chessclock-module">pychess.widgets.ChessClock module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-externalsdialog-module">pychess.widgets.ExternalsDialog module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-imagemenu-module">pychess.widgets.ImageMenu module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-infobar-module">pychess.widgets.InfoBar module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-infopanel-module">pychess.widgets.InfoPanel module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-learninfobar-module">pychess.widgets.LearnInfoBar module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-menuitemsdict-module">pychess.widgets.MenuItemsDict module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-piecewidget-module">pychess.widgets.PieceWidget module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-promotiondialog-module">pychess.widgets.PromotionDialog module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-recentchooser-module">pychess.widgets.RecentChooser module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-spotgraph-module">pychess.widgets.SpotGraph module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-taskermanager-module">pychess.widgets.TaskerManager module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-viewspanel-module">pychess.widgets.ViewsPanel module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-webkitbrowser-module">pychess.widgets.WebKitBrowser module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-analyzegamedialog-module">pychess.widgets.analyzegameDialog module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-discovererdialog-module">pychess.widgets.discovererDialog module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-enginesdialog-module">pychess.widgets.enginesDialog module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-gameinfodialog-module">pychess.widgets.gameinfoDialog module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-gamenanny-module">pychess.widgets.gamenanny module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-gamewidget-module">pychess.widgets.gamewidget module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-newgamedialog-module">pychess.widgets.newGameDialog module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-playerinfodialog-module">pychess.widgets.playerinfoDialog module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-preferencesdialog-module">pychess.widgets.preferencesDialog module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#pychess-widgets-tipoftheday-module">pychess.widgets.tipOfTheDay module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="pychess.widgets.html#module-contents">Module contents</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="pychess.html#submodules">Submodules</a></li>
+<li class="toctree-l2"><a class="reference internal" href="pychess.html#pychess-main-module">pychess.Main module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="pychess.html#module-contents">Module contents</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</section>
+
+
+          </div>
+          
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="Main">
+        <div class="sphinxsidebarwrapper">
+<h1 class="logo"><a href="../../../../index.html">Chess</a></h1>
+
+
+
+
+
+
+
+
+
+<search id="searchbox" style="display: none" role="search">
+    <div class="searchformwrapper">
+    <form class="search" action="../../../../search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Search"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</search>
+<script>document.getElementById('searchbox').style.display = "block"</script><h3>Navigation</h3>
+
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../../../../index.html">Documentation overview</a><ul>
+  </ul></li>
+</ul>
+</div>
+
+
+
+
+
+
+
+
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &#169;2025, Jasper Tresidder.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 8.1.3</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 1.0.0</a>
+      
+      |
+      <a href="../../../../_sources/lit/git_example/pychess/docs/modules.rst.txt"
+          rel="nofollow">Page source</a>
+    </div>
+
+    
+
+    
+  </body>
+</html>

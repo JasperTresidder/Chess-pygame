@@ -26,14 +26,7 @@ def create_FEN(board, turn, castle_rights, en_p_s, fmn):
         if row != 7:
             fen_string += '/'
     fen_string += ' ' + turn + ' ' + castle_rights + ' '
-    if en_p_s == '-':
-        fen_string += '-'
-    else:
-        fen_string += board_letters[int(en_p_s[4])]
-        if int(en_p_s[1]) == 4:
-            fen_string += '6'
-        else:
-            fen_string += str(int(en_p_s[1]))
+    fen_string += en_p_s if en_p_s != '' else '-'
     fen_string += ' 0 '
     fen_string += str(fmn)
     return fen_string
@@ -130,13 +123,6 @@ def parse_FEN(fen_string):
     castle_rights = fen_list[2]
 
     en_passant_square = fen_list[3]
-
-    # eps square here is translated into the location of the pawn that made the move
-    if fen_list[3] != '-':
-        if turn == 'w':
-            en_passant_square = str((int(en_passant_square[1]) - 2, int(board_letters.index(en_passant_square[0]))))
-        else:
-            en_passant_square = str((int(en_passant_square[1]), int(board_letters.index(en_passant_square[0]))))
 
     halfmoves_since_last_capture = int(fen_list[4])
 
