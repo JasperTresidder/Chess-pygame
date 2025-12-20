@@ -1,5 +1,4 @@
-<h3>This is a pygame implementation of chess. Following all rules, playing against stockfish AI, Player vs Player or AI vs AI.
-First upload. Needs refinement. </h3>
+<h3>This is a pygame implementation of chess. It follows chess rules, supports Player vs Player / Player vs AI / AI vs AI, and includes an in-game Game Review system for saved PGNs.</h3>
 
 <h5>Requires Python >=3.10 <br>
 Size: 166Mb</h5>
@@ -8,6 +7,24 @@ Size: 166Mb</h5>
 - You may have to <a href="https://stockfishchess.org/download/">install</a> your own version of Stockfish.<br>
 - Games are <b>automatically saved</b> in the <b>/data/games</b> folder as a pgn file
 - You can resize the window how you like 
+
+## Features
+- <b>Rules + legality</b>: move legality is generated via <code>python-chess</code>.
+- <b>Move input modes</b>: Click-to-move, Drag-to-move, or Click+Drag (configurable in Settings).
+- <b>Hint</b>: <code>Ctrl+H</code> draws a blue hint arrow.
+- <b>Eval bar</b>: asynchronous evaluation bar with show/hide toggle; shows the number on hover.
+- <b>AI strength</b>: Elo-based strength limiting (more beginner-friendly at low Elo).
+- <b>Game Review</b>:
+	- Browse saved PGNs from Settings (dropdown shows timestamp + AI Elo).
+	- Step through moves with Left/Right, jump by clicking moves, scroll with mouse wheel.
+	- Shows ACPL + Accuracy, and per-move quality tags (Book / Good / Best / Great / Amazing / Mistake / Blunder).
+	- Copies PGN to clipboard from the Review Games menu.
+	- On-board move-quality marker is drawn on the destination square in review.
+
+## Controls
+- <b>ESC</b>: open Settings (or exit Game Review when reviewing)
+- <b>Left/Right</b>: step through moves in Game Review
+- <b>Ctrl+H</b>: hint arrow
 
 
 ## Setup
@@ -32,11 +49,9 @@ MacOS/Unix:</h4>
 - Place the Stockfish application in the lit/stockfish/{your_platform}/ dictionary. and rename the application to 'stockfish'<br>
 </div>
 
-### TODO
-- Async evaluation of the position. 
-- Ability to play vs AI as black
-- Load games
-- Click through moves using arrow keys.
+### Notes
+- Saved games are written to <code>data/games/*.pgn</code>.
+- Stockfish is loaded from <code>lit/stockfish/&lt;platform&gt;/</code>.
 ![image](https://github.com/JasperTresidder/Chess-pygame/assets/51917264/b01feef1-62ac-49de-9bff-b3eea429fd1f)
 ![image](https://github.com/JasperTresidder/Chess-pygame/assets/51917264/348d3928-b7d3-4dab-9e20-09cacebfde73)
 ![image](https://github.com/JasperTresidder/Chess-pygame/assets/51917264/8e7ea6f8-6f18-4259-afa7-c802e682975b)
