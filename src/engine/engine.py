@@ -5,10 +5,72 @@ import os
 import re
 import random
 import sys
+import subprocess
 import threading
 import time
 import queue
 import contextlib
+
+def _enable_stockfish_no_console_windows() -> None:
+    """On Windows, prevent Stockfish subprocesses from spawning console windows.
+
+    This is especially important for PyInstaller GUI builds where each UCI engine
+    process may otherwise create its own visible console window.
+    """
+    try:
+        if os.name != 'nt':
+            return
+    except Exception:
+        return
+
+    try:
+        orig_popen = subprocess.Popen
+    except Exception:
+        return
+
+    # If someone already patched Popen, don't patch again.
+    try:
+        if getattr(subprocess.Popen, '__name__', '') == 'PopenNoWindow':
+            return
+    except Exception:
+        pass
+
+    def looks_like_stockfish_cmd(cmd) -> bool:
+        try:
+            if cmd is None:
+                return False
+            if isinstance(cmd, (list, tuple)) and cmd:
+                head = str(cmd[0])
+            else:
+                head = str(cmd)
+            head_l = head.lower()
+            return 'stockfish' in head_l and head_l.endswith('.exe')
+        except Exception:
+            return False
+
+    # IMPORTANT: asyncio on Windows subclasses subprocess.Popen.
+    # So we must keep subprocess.Popen as a *class*, not replace it with a function.
+    class PopenNoWindow(orig_popen):
+        def __init__(self, *popenargs, **kwargs):
+            try:
+                cmd = popenargs[0] if popenargs else kwargs.get('args')
+                if looks_like_stockfish_cmd(cmd):
+                    if 'creationflags' not in kwargs:
+                        kwargs['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+                    if 'startupinfo' not in kwargs:
+                        si = subprocess.STARTUPINFO()
+                        si.dwFlags |= getattr(subprocess, 'STARTF_USESHOWWINDOW', 1)
+                        si.wShowWindow = getattr(subprocess, 'SW_HIDE', 0)
+                        kwargs['startupinfo'] = si
+            except Exception:
+                pass
+            super().__init__(*popenargs, **kwargs)
+
+    subprocess.Popen = PopenNoWindow
+
+
+_enable_stockfish_no_console_windows()
+
 
 from src.engine.settings import SettingsMenu, EndGameMenu
 from src.functions.fen import *
@@ -18,7 +80,6 @@ from src.pieces.queen import Queen
 from src.pieces.base import Piece
 from stockfish import Stockfish
 import chess
-import chess.engine
 import chess.pgn
 import pygame_menu as pm
 import platform
@@ -89,6 +150,70 @@ class Engine:
         self.movement_click_enabled = True
         self.movement_drag_enabled = True
         self.eval_bar_enabled = True
+
+        # Player color for Player vs AI. Default is white.
+        self.player_colour: str = 'w'
+
+        # Load persisted player colour (saved by StartMenu/SettingsMenu). This is separate from
+        # SettingsMenu widgets (which do not expose this option).
+        try:
+            with open('data/settings/settings.txt', 'r') as f:
+                _lines = f.readlines()
+            if len(_lines) >= 10:
+                c = str(_lines[9]).strip().lower()
+                self.player_colour = 'b' if c.startswith('b') else 'w'
+        except Exception:
+            pass
+
+        # Time control / chess clock.
+        self.time_control: str = '5|0'  # minutes|incrementSeconds
+        self._tc_base_seconds: int = 5 * 60
+        self._tc_increment_seconds: int = 0
+        self._clock_white: float = float(self._tc_base_seconds)
+        self._clock_black: float = float(self._tc_base_seconds)
+        self._clock_running: bool = False
+        self._clock_last_ts: float | None = None
+        self._clock_font = None
+
+        # Board sizing: window-fit base size * user scale (drag handle).
+        # Default slightly smaller so clocks/labels never overlap.
+        self._board_user_scale: float = 0.92
+        self._board_base_size: int = int(getattr(self, 'size', 80)) if hasattr(self, 'size') else 80
+        self._board_resize_active: bool = False
+        self._board_resize_start_mouse: tuple[int, int] | None = None
+        self._board_resize_start_size: int | None = None
+        self._board_resize_handle_rect: pg.Rect | None = None
+
+        # In-game move browsing (left/right arrows) for the current game.
+        self._game_browse_active: bool = False
+        self._game_browse_index: int | None = None  # index into game_fens
+        self._game_browse_saved_fen: str | None = None
+        self._game_browse_saved_clock_running: bool = False
+        self._game_browse_live_turn: str | None = None
+
+        # In-game action buttons
+        self._undo_btn_rect: pg.Rect | None = None
+        self._resign_btn_rect: pg.Rect | None = None
+
+        # Serialize access to the main playing Stockfish instance.
+        # (Eval/review use separate Stockfish processes.)
+        self._play_engine_lock = threading.RLock()
+
+        # Async AI moves so the UI stays responsive (needed for premoves).
+        self._ai_move_queue: 'queue.Queue[str]' = queue.Queue(maxsize=1)
+        self._ai_stop = threading.Event()
+        self._ai_thread: threading.Thread | None = None
+        self.ai_thinking: bool = False
+
+        # Premove state (Player vs AI): stored as UCI and highlighted squares.
+        # Support multiple queued premoves (like chess.com).
+        # Each entry: (uci, (from_row, from_col), (to_row, to_col), piece_ref)
+        self._premove_queue: list[tuple[str, tuple[int, int], tuple[int, int], Piece]] = []
+        self._premove_squares: list[tuple[int, int]] = []
+        # Visual-only: show the next premove (first in queue) by snapping the piece.
+        self._premove_from: tuple[int, int] | None = None
+        self._premove_to: tuple[int, int] | None = None
+        self._premove_piece: Piece | None = None
         self.platform = None
         if 'Windows' in platform.platform():
             self.platform = 'Windows/' + self.engine + '.exe'
@@ -111,11 +236,12 @@ class Engine:
         else:
             try:
                 self.stockfish = Stockfish("lit/" + self.engine + "/" + self.platform,
-                                           depth=1,
-                                           parameters={"Threads": 1, "Minimum Thinking Time": 1, "Hash": 2,
-                                                       "Skill Level": 0.001,
-                                                       "UCI_LimitStrength": "true",
-                                                       "UCI_Elo": 0})
+                                           # Use sane defaults. Strength is applied via _apply_ai_strength().
+                                           depth=18,
+                                           parameters={"Threads": 1, "Minimum Thinking Time": 20, "Hash": 64,
+                                                       "Skill Level": 20,
+                                                       "UCI_LimitStrength": "false",
+                                                       "UCI_Elo": 1350})
             except FileNotFoundError:
                 print(
                     "Stockfish program located in '" + "lit/" + self.engine + "/" + self.platform + "' is non respondent please install stockfish here: https://stockfishchess.org/download/")
@@ -128,44 +254,34 @@ class Engine:
         # Apply initial AI limiting parameters (safe even if user changes later in Settings)
         self._apply_ai_strength()
 
-        # Dedicated Stockfish instance for evaluation (keeps AI move-generation responsive)
-        try:
-            self.stockfish_eval = Stockfish(
-                "lit/" + self.engine + "/" + self.platform,
-                depth=12,
-                parameters={"Threads": 1, "Minimum Thinking Time": 1, "Hash": 16},
-            )
-            self.stockfish_eval.set_fen_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
-        except FileNotFoundError:
-            self.stockfish_eval = None
+        # Extra Stockfish instances are created lazily. This avoids spawning multiple
+        # Stockfish console processes on startup (especially visible in PyInstaller builds).
+        self.stockfish_eval = None
+        self.stockfish_review = None
+        self.stockfish_review_analysis = None
 
-        # Dedicated Stockfish instance for review analysis / best-move arrows
-        try:
-            self.stockfish_review = Stockfish(
-                "lit/" + self.engine + "/" + self.platform,
-                depth=12,
-                parameters={"Threads": 1, "Minimum Thinking Time": 1, "Hash": 32},
-            )
-            self.stockfish_review.set_fen_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
-        except FileNotFoundError:
-            self.stockfish_review = None
+        # Review analysis (interactive variations) + top-lines (PV) analysis.
+        self.stockfish_review_pv = None
+        self._review_pv_queue: queue.Queue[str] = queue.Queue(maxsize=1)
+        # NOTE: keep UI responsive by never holding the UI lock while Stockfish is thinking.
+        self._review_pv_lock = threading.Lock()  # protects review_pv_lines/review_pv_pending
+        self._review_pv_engine_lock = threading.Lock()  # protects stockfish_review_pv access
+        self._review_pv_stop = threading.Event()
+        self._review_pv_thread: threading.Thread | None = None
+        self.review_pv_lines: list[str] = []
+        self.review_pv_pending: bool = False
 
-        # Separate instance for review analysis so it doesn't fight with best-move arrows.
-        try:
-            self.stockfish_review_analysis = Stockfish(
-                "lit/" + self.engine + "/" + self.platform,
-                depth=12,
-                parameters={"Threads": 1, "Minimum Thinking Time": 1, "Hash": 64},
-            )
-            self.stockfish_review_analysis.set_fen_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
-        except FileNotFoundError:
-            self.stockfish_review_analysis = None
+        # Review-mode drag uses the same tx/ty + updates flag as the main game.
+
+        self._review_analysis_active: bool = False
+        self._review_analysis_base_index: int = 0
+        self._review_analysis_fen: str = ''
+        self._review_variations: dict[int, list[str]] = {}
 
         self._review_queue: queue.Queue[tuple[str, int]] = queue.Queue(maxsize=1)
         self._review_lock = threading.Lock()
         self._review_stop = threading.Event()
-        self._review_thread = threading.Thread(target=self._review_worker, daemon=True)
-        self._review_thread.start()
+        self._review_thread: threading.Thread | None = None
 
         self._eval_queue: queue.Queue[str] = queue.Queue(maxsize=1)
         self._eval_stop = threading.Event()
@@ -177,8 +293,9 @@ class Engine:
         self._eval_raw: dict | None = None
         self._eval_bar_rect: pg.Rect | None = None
         self._eval_depth_steps: list[int] = [6, 10, 14, 18]
-        self._eval_thread = threading.Thread(target=self._eval_worker, daemon=True)
-        self._eval_thread.start()
+        self._eval_thread: threading.Thread | None = None
+
+        # Don't start eval/review worker threads until their engines are created.
 
         # self.engine_ = chess.engine.SimpleEngine.popen_uci('lit/stockfish/Windows/stockfish.exe')
         self.game = chess.pgn.Game()
@@ -234,6 +351,7 @@ class Engine:
         self.default_size = int(pg.display.get_window_size()[1] - 200 / 8)
         self.font = pg.font.SysFont('segoescript', 30)
         self.eval_font = pg.font.SysFont('segoescript', 18)
+        self._clock_font = pg.font.SysFont('segoescript', 24)
         self.updates = False
         self.arrow_colour = (252, 177, 3)
         self.colours = [(118, 150, 86), (238, 238, 210)]
@@ -249,6 +367,9 @@ class Engine:
         self.selected_square: tuple[int, int] | None = None
         self._mouse_down_pos: tuple[int, int] | None = None
         self._drag_threshold_px = 6
+        # When a drag is cancelled via right-click, a left-button release may still arrive.
+        # Swallow that one-shot event so it doesn't select another piece.
+        self._ignore_next_left_mouse_up = False
         self.background = pg.image.load('data/img/background_dark.png').convert()
         self.background = pg.transform.smoothscale(self.background,
                                                    (pg.display.get_window_size()[0], pg.display.get_window_size()[1]))
@@ -267,9 +388,745 @@ class Engine:
             self.get_eval()
         self.clock = pg.time.Clock()
         self.settings.confirm()
+        # Clickable settings (cog) button rect in screen coords.
+        self._settings_btn_rect: pg.Rect | None = None
 
         # Kick off initial evaluation
         self.request_eval()
+
+        # Show a start popup on first frame.
+        self._start_menu_shown = False
+
+    def _open_settings_menu(self) -> None:
+        """Open Settings using a fresh menu instance.
+
+        The settings widgets (notably AI Elo) are initialized from disk defaults.
+        Since the start menu can change those defaults after Engine init, we must
+        recreate the SettingsMenu on each open to avoid showing stale values.
+        """
+        try:
+            self.settings = SettingsMenu(
+                title='Settings',
+                width=self.screen.get_width(),
+                height=self.screen.get_height(),
+                surface=self.screen,
+                parent=self,
+                theme=pm.themes.THEME_DARK,
+            )
+        except Exception:
+            return
+
+        try:
+            self.settings.run()
+        except Exception:
+            pass
+
+    def _clear_premove(self) -> None:
+        self._premove_queue = []
+        self._premove_squares = []
+        self._premove_from = None
+        self._premove_to = None
+        self._premove_piece = None
+        try:
+            if self.selected_square is not None and self.player_vs_ai and (self.turn == self._ai_side()):
+                self.selected_square = None
+        except Exception:
+            pass
+
+    def _rebuild_premove_visuals(self) -> None:
+        """Update derived premove highlight/visual fields from the queue."""
+        squares: list[tuple[int, int]] = []
+        try:
+            for uci, frm, to, piece in self._premove_queue:
+                squares.append(frm)
+                squares.append(to)
+        except Exception:
+            squares = []
+
+        # De-dup while preserving order.
+        out: list[tuple[int, int]] = []
+        seen = set()
+        for s in squares:
+            if s not in seen:
+                seen.add(s)
+                out.append(s)
+        self._premove_squares = out
+
+        if self._premove_queue:
+            try:
+                _, frm, to, piece = self._premove_queue[0]
+                self._premove_from = frm
+                self._premove_to = to
+                self._premove_piece = piece
+            except Exception:
+                self._premove_from = None
+                self._premove_to = None
+                self._premove_piece = None
+        else:
+            self._premove_from = None
+            self._premove_to = None
+            self._premove_piece = None
+
+    def _virtual_position_for_piece(self, piece: Piece) -> tuple[int, int]:
+        """Return the piece position after applying queued premoves (virtual board)."""
+        try:
+            pos = (int(piece.position[0]), int(piece.position[1]))
+        except Exception:
+            pos = (0, 0)
+        try:
+            for _, _frm, to, p in self._premove_queue:
+                if p == piece:
+                    pos = (int(to[0]), int(to[1]))
+        except Exception:
+            pass
+        return pos
+
+    def _build_virtual_player_piece_map(self) -> dict[tuple[int, int], Piece]:
+        """Map virtual squares -> player's Piece objects (after applying queued premoves)."""
+        side = self._player_side()
+        pos_by_piece: dict[Piece, tuple[int, int]] = {}
+        sq_to_piece: dict[tuple[int, int], Piece] = {}
+
+        try:
+            for p in self.all_pieces:
+                try:
+                    if getattr(p, 'colour', '')[:1] != side:
+                        continue
+                    pr, pc = int(p.position[0]), int(p.position[1])
+                    pos_by_piece[p] = (pr, pc)
+                    sq_to_piece[(pr, pc)] = p
+                except Exception:
+                    continue
+        except Exception:
+            return {}
+
+        try:
+            for _uci, frm, to, p in self._premove_queue:
+                if getattr(p, 'colour', '')[:1] != side:
+                    continue
+                old = pos_by_piece.get(p)
+                if old is not None and sq_to_piece.get(old) == p:
+                    sq_to_piece.pop(old, None)
+                pos_by_piece[p] = (int(to[0]), int(to[1]))
+                sq_to_piece[(int(to[0]), int(to[1]))] = p
+        except Exception:
+            pass
+
+        return sq_to_piece
+
+    def _virtual_player_piece_at(self, row: int, col: int) -> Piece | None:
+        try:
+            return self._build_virtual_player_piece_map().get((int(row), int(col)))
+        except Exception:
+            return None
+
+    def _pseudo_moves_for_piece(self, piece: Piece, from_row: int, from_col: int) -> tuple[list[tuple[int, int]], set[tuple[int, int]]]:
+        """Pseudo legal moves on an empty board (no blockers, no checks)."""
+        try:
+            kind = str(getattr(piece, 'piece', '')).lower()
+        except Exception:
+            kind = ''
+
+        positions: list[tuple[int, int]] = []
+        captures: set[tuple[int, int]] = set()
+
+        def add_square(r: int, c: int, cap: bool = True) -> None:
+            if 0 <= r < 8 and 0 <= c < 8:
+                dx = int(c) - int(from_col)
+                dy = int(r) - int(from_row)
+                positions.append((dx, dy))
+                if cap:
+                    captures.add((dx, dy))
+
+        if kind == 'n':
+            for dy, dx in [(2, 1), (2, -1), (-2, 1), (-2, -1), (1, 2), (1, -2), (-1, 2), (-1, -2)]:
+                add_square(from_row + dy, from_col + dx, cap=True)
+            return positions, captures
+
+        if kind == 'k':
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    add_square(from_row + dy, from_col + dx, cap=True)
+            return positions, captures
+
+        if kind == 'p':
+            side = getattr(piece, 'colour', '')[:1]
+            forward = -1 if side == 'w' else 1
+            # forward moves (empty board)
+            add_square(from_row + forward, from_col, cap=False)
+            start_rank = 6 if side == 'w' else 1
+            if int(from_row) == start_rank:
+                add_square(from_row + 2 * forward, from_col, cap=False)
+            # capture diagonals (what the pawn "sees")
+            add_square(from_row + forward, from_col - 1, cap=True)
+            add_square(from_row + forward, from_col + 1, cap=True)
+            return positions, captures
+
+        # Sliding pieces: rays to edge.
+        directions: list[tuple[int, int]] = []
+        if kind == 'b':
+            directions = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+        elif kind == 'r':
+            directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+        elif kind == 'q':
+            directions = [(1, 1), (1, -1), (-1, 1), (-1, -1), (1, 0), (-1, 0), (0, 1), (0, -1)]
+
+        for dy, dx in directions:
+            for step in range(1, 8):
+                r = from_row + dy * step
+                c = from_col + dx * step
+                if not (0 <= r < 8 and 0 <= c < 8):
+                    break
+                add_square(r, c, cap=True)
+
+        return positions, captures
+
+    def _capture_deltas_from_occupancy(
+        self,
+        from_row: int,
+        from_col: int,
+        deltas: list[tuple[int, int]],
+        side: str,
+    ) -> set[tuple[int, int]]:
+        """Return dx/dy deltas that land on an occupied opponent square (current board only)."""
+        out: set[tuple[int, int]] = set()
+        try:
+            for dx, dy in deltas:
+                r = int(from_row) + int(dy)
+                c = int(from_col) + int(dx)
+                if not (0 <= r < 8 and 0 <= c < 8):
+                    continue
+                dst = self.board[r][c]
+                if dst != ' ' and getattr(dst, 'colour', '')[:1] not in ('', side):
+                    out.add((dx, dy))
+        except Exception:
+            return set()
+        return out
+
+    def _legal_moves_for_piece_side(self, row: int, col: int, side: str) -> tuple[list[tuple[int, int]], set[tuple[int, int]]]:
+        """Compute legal move deltas for a piece at (row,col) for a given side (w/b) in the *current* position.
+
+        This is used to show legal-move dots while premoving (AI to move), where Engine.update_legal_moves() only
+        populated moves for the side to move.
+        """
+        fen = ''
+        try:
+            fen = self.game_fens[-1]
+        except Exception:
+            fen = self._current_fen()
+
+        try:
+            b = chess.Board(fen)
+        except Exception:
+            return [], set()
+
+        try:
+            b.turn = (side == 'w')
+        except Exception:
+            pass
+
+        try:
+            from_sq = self._chess_square_from_coords(row, col)
+        except Exception:
+            return [], set()
+
+        positions: list[tuple[int, int]] = []
+        captures: set[tuple[int, int]] = set()
+        try:
+            for mv in b.legal_moves:
+                if mv.from_square != from_sq:
+                    continue
+                fr, fc = self._coords_from_chess_square(mv.from_square)
+                tr, tc = self._coords_from_chess_square(mv.to_square)
+                dx_dy = (tc - fc, tr - fr)
+                positions.append(dx_dy)
+                if b.is_capture(mv):
+                    captures.add(dx_dy)
+        except Exception:
+            return [], set()
+
+        return positions, captures
+
+    def _ai_side(self) -> str:
+        return 'b' if self.player_colour == 'w' else 'w'
+
+    def _player_side(self) -> str:
+        return self.player_colour if self.player_colour in ('w', 'b') else 'w'
+
+    @staticmethod
+    def _format_clock(seconds: float) -> str:
+        try:
+            s = max(0, int(seconds + 0.0001))
+        except Exception:
+            s = 0
+        m = s // 60
+        sec = s % 60
+        return f"{m}:{sec:02d}"
+
+    @staticmethod
+    def _parse_time_control_str(value: str) -> tuple[int, int, str]:
+        """Parse 'min|inc' or 'min' into (baseSeconds, incSeconds, normalizedStr)."""
+        s = str(value or '').strip()
+        s = s.replace(' ', '')
+        if not s:
+            return 5 * 60, 0, '5|0'
+        if '|' in s:
+            mins_s, inc_s = s.split('|', 1)
+        else:
+            mins_s, inc_s = s, '0'
+        try:
+            mins = int(mins_s)
+        except Exception:
+            mins = 5
+        try:
+            inc = int(inc_s) if inc_s != '' else 0
+        except Exception:
+            inc = 0
+        mins = max(0, mins)
+        inc = max(0, inc)
+        return mins * 60, inc, f"{mins}|{inc}"
+
+    def set_time_control(self, value: str) -> None:
+        base_s, inc_s, norm = self._parse_time_control_str(value)
+        self.time_control = norm
+        self._tc_base_seconds = int(base_s)
+        self._tc_increment_seconds = int(inc_s)
+        # Only reset clocks automatically if the game hasn't started yet.
+        try:
+            if len(self.game_fens) <= 1:
+                self._reset_clocks(start_running=not self.end_popup_active and not self.review_active)
+        except Exception:
+            self._reset_clocks(start_running=False)
+
+    def set_player_colour(self, colour: str) -> None:
+        c = str(colour or '').lower().strip()
+        self.player_colour = 'b' if c.startswith('b') else 'w'
+        # In PvAI, default view should show the player's pieces at the bottom.
+        if self.player_vs_ai:
+            self.flipped = bool(self.player_colour == 'b')
+
+    def _reset_clocks(self, start_running: bool = True) -> None:
+        self._clock_white = float(self._tc_base_seconds)
+        self._clock_black = float(self._tc_base_seconds)
+        self._clock_running = bool(start_running)
+        self._clock_last_ts = time.time()
+
+    def _tick_clock(self) -> None:
+        if not self._clock_running:
+            return
+        if self.review_active or self.end_popup_active or self.game_just_ended:
+            return
+        now = time.time()
+        if self._clock_last_ts is None:
+            self._clock_last_ts = now
+            return
+        dt = now - self._clock_last_ts
+        self._clock_last_ts = now
+        if dt <= 0:
+            return
+
+        # While browsing past moves we temporarily load historical FENs, which changes self.turn.
+        # Keep ticking the live game's side-to-move so the clock doesn't appear to "stop".
+        turn_for_clock = self.turn
+        try:
+            if getattr(self, '_game_browse_active', False) and self._game_browse_live_turn in ('w', 'b'):
+                turn_for_clock = str(self._game_browse_live_turn)
+        except Exception:
+            turn_for_clock = self.turn
+
+        if turn_for_clock == 'w':
+            self._clock_white = max(0.0, self._clock_white - dt)
+            if self._clock_white <= 0.0:
+                self._clock_running = False
+                self.end_game('TIMEOUT BLACK WINS !!')
+        else:
+            self._clock_black = max(0.0, self._clock_black - dt)
+            if self._clock_black <= 0.0:
+                self._clock_running = False
+                self.end_game('TIMEOUT WHITE WINS !!')
+
+    def _on_move_completed_clock(self, mover: str) -> None:
+        """Apply increment to the side that just moved and restart tick baseline."""
+        try:
+            inc = int(self._tc_increment_seconds)
+        except Exception:
+            inc = 0
+        if inc > 0:
+            if mover == 'w':
+                self._clock_white += inc
+            else:
+                self._clock_black += inc
+        self._clock_last_ts = time.time()
+
+    def _draw_clocks(self) -> None:
+        if self.review_active:
+            return
+        try:
+            font = self._clock_font or self.font
+        except Exception:
+            return
+        board_rect = pg.Rect(int(self.offset[0]), int(self.offset[1]), int(self.size * 8), int(self.size * 8))
+        margin = max(8, int(self.size * 0.12))
+        box_h = max(26, int(self.size * 0.55))
+        box_w = max(120, int(self.size * 2.2))
+
+        def draw_box(side: str, seconds: float, x: int, y: int):
+            txt = self._format_clock(seconds)
+            fg = (220, 0, 0) if seconds < 10.0 else (230, 230, 230)
+            bg = (20, 20, 20)
+            rect = pg.Rect(x, y, box_w, box_h)
+            try:
+                pg.draw.rect(self.screen, bg, rect, border_radius=8)
+                pg.draw.rect(self.screen, (80, 80, 80), rect, width=2, border_radius=8)
+            except Exception:
+                pass
+            surf = font.render(txt, True, fg)
+            self.screen.blit(surf, (rect.centerx - surf.get_width() // 2, rect.centery - surf.get_height() // 2))
+
+        # Black clock above, white below. Keep white clock below file labels.
+        x = board_rect.right - box_w
+        y_black = max(6, board_rect.top - box_h - margin)
+        label_h = int(self.size * (0.60 if self.show_numbers else 0.25))
+        y_white = board_rect.bottom + label_h + margin
+        # Safety clamp (should rarely hit because layout reserves space).
+        y_white = min(self.screen.get_height() - box_h - 6, int(y_white))
+        draw_box('b', float(self._clock_black), int(x), int(y_black))
+        draw_box('w', float(self._clock_white), int(x), int(y_white))
+
+    def _compute_normal_layout(self, win_w: int, win_h: int) -> tuple[int, list[float], bool, int]:
+        """Compute (square_size, offset[x,y], show_numbers, base_size) for normal play.
+
+        Reserves vertical space for clocks and file/rank labels so UI never overlaps.
+        """
+        show_numbers = True
+        # Initial guess.
+        guess = max(16, int(min(win_w, win_h) / 10))
+
+        def compute_base(sz: int, show_nums: bool) -> int:
+            margin = max(8, int(sz * 0.12))
+            box_h = max(26, int(sz * 0.55))
+            label_h = int(sz * (0.60 if show_nums else 0.25))
+            left_label_w = (int(sz * 0.55) + 12) if show_nums else 18
+            top_extra = box_h + margin + 6
+            bottom_extra = label_h + margin + box_h + 6
+            avail_w = max(120, int(win_w) - left_label_w - 18)
+            avail_h = max(120, int(win_h) - top_extra - bottom_extra)
+            return max(1, int(min(avail_w, avail_h) // 8))
+
+        # Two-pass refinement.
+        base = compute_base(guess, show_numbers)
+        if base < 24:
+            show_numbers = False
+        base = compute_base(base, show_numbers)
+
+        # Apply user scale but never exceed base.
+        try:
+            scale = float(self._board_user_scale)
+        except Exception:
+            scale = 0.92
+        scale = max(0.45, min(1.0, scale))
+        size = int(max(10, min(base, int(round(base * scale)))))
+
+        # Recompute margins with final size.
+        margin = max(8, int(size * 0.12))
+        box_h = max(26, int(size * 0.55))
+        label_h = int(size * (0.60 if show_numbers else 0.25))
+        left_label_w = (int(size * 0.55) + 12) if show_numbers else 18
+        top_extra = box_h + margin + 6
+        bottom_extra = label_h + margin + box_h + 6
+
+        board_px = size * 8
+        # Center horizontally, but ensure room for left rank labels.
+        x = (win_w - board_px) / 2
+        x = max(left_label_w, min(x, win_w - board_px - 6))
+
+        # Center vertically within the reserved band.
+        y_min = float(top_extra)
+        y_max = float(win_h - bottom_extra - board_px)
+        y = (win_h - board_px) / 2
+        y = max(y_min, min(y, y_max))
+
+        return int(size), [float(x), float(y)], bool(show_numbers), int(base)
+
+    def _play_premove_sound(self) -> None:
+        if not self.sound_enabled:
+            return
+        try:
+            pg.mixer.music.load('data/sounds/move.mp3')
+            pg.mixer.music.play(1)
+        except Exception:
+            pass
+
+    def _set_premove(self, from_row: int, from_col: int, to_row: int, to_col: int) -> None:
+        """Store a premove (UCI) and highlight its start/end squares.
+
+        Premove is allowed only while waiting for the AI (Player vs AI, black to move).
+        """
+        if not self.player_vs_ai or self.review_active or self.end_popup_active:
+            return
+        if self.turn != self._ai_side():
+            return
+
+        # Ignore drops outside the board.
+        try:
+            if not (0 <= int(to_row) < 8 and 0 <= int(to_col) < 8):
+                return
+        except Exception:
+            return
+
+        piece = self.board[from_row][from_col]
+        if piece == ' ':
+            # Allow selecting a premoved piece at its virtual square.
+            piece = self._virtual_player_piece_at(from_row, from_col)
+            if piece is None:
+                return
+
+        # Virtual from-square for this piece (supports premoving the same piece multiple times).
+        try:
+            from_row, from_col = self._virtual_position_for_piece(piece)
+        except Exception:
+            pass
+
+        # Enforce pseudo-legal movement on an empty board (so premoves match what the piece
+        # "would see" without blockers). This keeps drag-based premoves consistent too.
+        try:
+            pseudo_positions, _pseudo_caps = self._pseudo_moves_for_piece(piece, int(from_row), int(from_col))
+            vdx = int(to_col) - int(from_col)
+            vdy = int(to_row) - int(from_row)
+            if (vdx, vdy) not in pseudo_positions:
+                return
+        except Exception:
+            # If we can't validate, be conservative.
+            return
+        # Only premove your own pieces.
+        if getattr(piece, 'colour', '')[:1] != ('w' if self._player_side() == 'w' else 'b'):
+            return
+        # Allow premoving onto squares currently occupied by your own pieces.
+        # The premove will only execute if legal once the opponent moves.
+
+        uci = translate_move(from_row, from_col, to_row, to_col)
+        try:
+            if piece.piece == 'P' and to_row == 0:
+                uci += 'q'
+        except Exception:
+            pass
+
+        # Allow queuing multiple premoves.
+        try:
+            if len(self._premove_queue) >= 5:
+                return
+        except Exception:
+            pass
+
+        try:
+            self._premove_queue.append((str(uci), (from_row, from_col), (to_row, to_col), piece))
+        except Exception:
+            self._premove_queue = [(str(uci), (from_row, from_col), (to_row, to_col), piece)]
+
+        self._rebuild_premove_visuals()
+        self._play_premove_sound()
+
+    def _apply_premove_if_legal(self) -> None:
+        """If the next premove is queued and is legal now, apply it. Otherwise discard all."""
+        if not self.player_vs_ai or self.review_active or self.end_popup_active:
+            self._clear_premove()
+            return
+        if self.ai_thinking:
+            return
+        if not getattr(self, '_premove_queue', None):
+            return
+        # Only apply when it's the player's turn.
+        if self.turn != self._player_side():
+            return
+
+        fen = ''
+        try:
+            fen = self.game_fens[-1]
+        except Exception:
+            fen = self._current_fen()
+
+        try:
+            b = chess.Board(fen)
+        except Exception:
+            self._clear_premove()
+            return
+
+        try:
+            uci = str(self._premove_queue[0][0])
+        except Exception:
+            self._clear_premove()
+            return
+        legal = False
+        mv = None
+        try:
+            mv = chess.Move.from_uci(uci)
+            legal = mv in b.legal_moves
+        except Exception:
+            legal = False
+
+        # If promotion suffix is missing, try auto-queen.
+        if not legal and len(uci) == 4:
+            try:
+                mv_q = chess.Move.from_uci(uci + 'q')
+                if mv_q in b.legal_moves:
+                    uci = uci + 'q'
+                    mv = mv_q
+                    legal = True
+            except Exception:
+                pass
+
+        if not legal:
+            # If the queued premove is no longer legal, drop the entire queue.
+            self._clear_premove()
+            return
+
+        # Record in PGN + last-move markers, then apply on the internal board.
+        try:
+            self.last_move.append(uci)
+        except Exception:
+            self.last_move = [uci]
+        try:
+            self.node = self.node.add_variation(chess.Move.from_uci(uci))
+        except Exception:
+            pass
+
+        self.engine_make_move(uci)
+        try:
+            self._premove_queue.pop(0)
+        except Exception:
+            self._premove_queue = []
+        self._rebuild_premove_visuals()
+
+        # After a successful premove, immediately request the AI reply.
+        if not self.end_popup_active and not self.game_just_ended:
+            self._request_ai_move_async()
+
+    def _ensure_ai_thread(self) -> None:
+        if self._ai_thread is not None and self._ai_thread.is_alive():
+            return
+
+        self._ai_stop.clear()
+
+        def worker() -> None:
+            while not self._ai_stop.is_set():
+                try:
+                    fen = self._ai_move_queue.get(timeout=0.25)
+                except queue.Empty:
+                    continue
+
+                # Drain to latest
+                try:
+                    while True:
+                        fen = self._ai_move_queue.get_nowait()
+                except queue.Empty:
+                    pass
+
+                # Compute a move.
+                move = None
+                try:
+                    with self._play_engine_lock:
+                        try:
+                            self.stockfish.set_fen_position(str(fen))
+                        except Exception:
+                            pass
+                        move = self.move_strength(self.ai_elo)
+                except Exception:
+                    move = None
+
+                # Publish the result back to the main thread.
+                try:
+                    if move:
+                        if self._ai_move_queue.full():
+                            # Note: this queue is reused; make sure it's empty for next request.
+                            pass
+                        # Use a separate attribute? Keep simple: stash result in a dedicated slot.
+                except Exception:
+                    pass
+
+                try:
+                    # Put result in a lightweight attribute for polling.
+                    self._ai_result = str(move) if move else ''
+                    self._ai_result_fen = str(fen)
+                except Exception:
+                    self._ai_result = str(move) if move else ''
+                    self._ai_result_fen = ''
+
+        self._ai_result = ''
+        self._ai_result_fen = ''
+        self._ai_thread = threading.Thread(target=worker, daemon=True)
+        self._ai_thread.start()
+
+    def _request_ai_move_async(self) -> None:
+        """Request an AI move for the current position without blocking the UI."""
+        if not self.player_vs_ai or self.review_active or self.end_popup_active:
+            return
+        if self.turn != self._ai_side():
+            return
+        self._ensure_ai_thread()
+        fen = self._current_fen()
+        self.ai_thinking = True
+        try:
+            self._ai_result = ''
+            self._ai_result_fen = ''
+        except Exception:
+            pass
+        try:
+            if self._ai_move_queue.full():
+                _ = self._ai_move_queue.get_nowait()
+            self._ai_move_queue.put_nowait(fen)
+        except Exception:
+            pass
+
+    def _poll_ai_result(self) -> None:
+        """Apply a finished AI move (if any), then try to apply premove."""
+        if not self.player_vs_ai or self.review_active or self.end_popup_active:
+            return
+        if not getattr(self, 'ai_thinking', False):
+            return
+
+        move = ''
+        try:
+            move = str(getattr(self, '_ai_result', '') or '')
+        except Exception:
+            move = ''
+        if not move:
+            return
+
+        # If a stale result comes back after an undo/reset, ignore it.
+        try:
+            fen_for_result = str(getattr(self, '_ai_result_fen', '') or '')
+            if fen_for_result and fen_for_result != str(self._current_fen()):
+                self._ai_result = ''
+                self._ai_result_fen = ''
+                return
+        except Exception:
+            pass
+
+        # Clear the result slot first (avoid double-apply if something throws).
+        try:
+            self._ai_result = ''
+            self._ai_result_fen = ''
+        except Exception:
+            pass
+
+        self.ai_thinking = False
+
+        # Record AI move to PGN + apply it.
+        try:
+            self.last_move.append(move)
+        except Exception:
+            self.last_move = [move]
+        try:
+            self.node = self.node.add_variation(chess.Move.from_uci(move))
+        except Exception:
+            pass
+
+        self.engine_make_move(move)
+
+        # After AI moves, try to apply the queued premove.
+        self._apply_premove_if_legal()
 
     def _save_pgn(self, path: str) -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -289,9 +1146,11 @@ class Engine:
             except Exception:
                 pass
         elif self.player_vs_ai:
-            # In this project the player is White and the AI is Black.
             try:
-                self.game.headers["BlackElo"] = str(int(self.ai_elo))
+                if self._ai_side() == 'w':
+                    self.game.headers["WhiteElo"] = str(int(self.ai_elo))
+                else:
+                    self.game.headers["BlackElo"] = str(int(self.ai_elo))
             except Exception:
                 pass
 
@@ -332,12 +1191,255 @@ class Engine:
     def _current_fen(self) -> str:
         return create_FEN(self.board, self.turn, self.castle_rights, self.en_passant_square, self.fullmove_number)
 
+    def _stockfish_path(self) -> str:
+        return "lit/" + self.engine + "/" + self.platform
+
+    def _ensure_eval_engine(self) -> bool:
+        if self.stockfish_eval is None:
+            try:
+                self.stockfish_eval = Stockfish(
+                    self._stockfish_path(),
+                    depth=12,
+                    parameters={"Threads": 1, "Minimum Thinking Time": 1, "Hash": 16},
+                )
+                self.stockfish_eval.set_fen_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+            except FileNotFoundError:
+                self.stockfish_eval = None
+                return False
+            except Exception:
+                self.stockfish_eval = None
+                return False
+
+        if self._eval_thread is None or not self._eval_thread.is_alive():
+            self._eval_stop.clear()
+            self._eval_thread = threading.Thread(target=self._eval_worker, daemon=True)
+            self._eval_thread.start()
+        return True
+
+    def _ensure_review_engine(self) -> bool:
+        if self.stockfish_review is None:
+            try:
+                self.stockfish_review = Stockfish(
+                    self._stockfish_path(),
+                    depth=12,
+                    parameters={"Threads": 1, "Minimum Thinking Time": 1, "Hash": 32},
+                )
+                self.stockfish_review.set_fen_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+            except FileNotFoundError:
+                self.stockfish_review = None
+                return False
+            except Exception:
+                self.stockfish_review = None
+                return False
+
+        if self._review_thread is None or not self._review_thread.is_alive():
+            self._review_stop.clear()
+            self._review_thread = threading.Thread(target=self._review_worker, daemon=True)
+            self._review_thread.start()
+        return True
+
+    def _ensure_review_analysis_engine(self) -> bool:
+        if self.stockfish_review_analysis is None:
+            try:
+                self.stockfish_review_analysis = Stockfish(
+                    self._stockfish_path(),
+                    depth=12,
+                    parameters={"Threads": 1, "Minimum Thinking Time": 1, "Hash": 64},
+                )
+                self.stockfish_review_analysis.set_fen_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+            except FileNotFoundError:
+                self.stockfish_review_analysis = None
+                return False
+            except Exception:
+                self.stockfish_review_analysis = None
+                return False
+        return True
+
+    def _ensure_review_pv_engine(self) -> bool:
+        if self.stockfish_review_pv is None:
+            try:
+                self.stockfish_review_pv = Stockfish(
+                    self._stockfish_path(),
+                    depth=12,
+                    parameters={"Threads": 1, "Minimum Thinking Time": 1, "Hash": 32},
+                )
+                self.stockfish_review_pv.set_fen_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+            except FileNotFoundError:
+                self.stockfish_review_pv = None
+                return False
+            except Exception:
+                self.stockfish_review_pv = None
+                return False
+
+        if self._review_pv_thread is None or not self._review_pv_thread.is_alive():
+            self._review_pv_stop.clear()
+            self._review_pv_thread = threading.Thread(target=self._review_pv_worker, daemon=True)
+            self._review_pv_thread.start()
+        return True
+
+    @staticmethod
+    def _format_eval_short(e: dict | None) -> str:
+        if not isinstance(e, dict):
+            return ""
+        if e.get('type') == 'cp':
+            try:
+                val = float(e.get('value', 0)) / 100.0
+            except Exception:
+                val = 0.0
+            return f"+{val:.2f}" if val >= 0 else f"{val:.2f}"
+        try:
+            mate_val = int(e.get('value', 0))
+        except Exception:
+            mate_val = 0
+        return f"M{mate_val}"
+
+    def _review_display_fen(self) -> str:
+        if self._review_analysis_active:
+            return self._review_analysis_fen or (self.review_fens[self.review_index] if self.review_fens else '')
+        return self.review_fens[self.review_index] if self.review_fens else ''
+
+    def request_review_pv(self) -> None:
+        """Queue an async top-3-lines analysis for the current review position."""
+        if not self.review_active:
+            return
+        if not self._ensure_review_pv_engine():
+            return
+        fen = self._review_display_fen()
+        if not fen:
+            return
+        try:
+            with self._review_pv_lock:
+                self.review_pv_pending = True
+        except Exception:
+            pass
+        try:
+            if self._review_pv_queue.full():
+                _ = self._review_pv_queue.get_nowait()
+            self._review_pv_queue.put_nowait(fen)
+        except Exception:
+            pass
+
+    def _review_pv_worker(self) -> None:
+        if self.stockfish_review_pv is None:
+            return
+
+        def eval_from_topmove(d: dict) -> dict:
+            if not isinstance(d, dict):
+                return {"type": "cp", "value": 0}
+            if d.get('Mate') is not None:
+                try:
+                    return {"type": "mate", "value": int(d.get('Mate'))}
+                except Exception:
+                    return {"type": "mate", "value": 0}
+            try:
+                return {"type": "cp", "value": int(d.get('Centipawn', 0))}
+            except Exception:
+                return {"type": "cp", "value": 0}
+
+        while not self._review_pv_stop.is_set():
+            try:
+                fen = self._review_pv_queue.get(timeout=0.25)
+            except queue.Empty:
+                continue
+
+            # Drain to latest.
+            try:
+                while True:
+                    fen = self._review_pv_queue.get_nowait()
+            except queue.Empty:
+                pass
+
+            # If user navigated since this request, skip.
+            try:
+                if fen != self._review_display_fen():
+                    continue
+            except Exception:
+                pass
+
+            lines_out: list[str] = []
+            try:
+                # Keep this lightweight so move navigation stays snappy.
+                # We show: eval + best move in SAN (no long PV continuation).
+                with self._review_pv_engine_lock:
+                    try:
+                        self.stockfish_review_pv.update_engine_parameters({"MultiPV": 3, "UCI_LimitStrength": "false"})
+                    except Exception:
+                        pass
+                    try:
+                        self.stockfish_review_pv.set_skill_level(20)
+                        self.stockfish_review_pv.set_depth(10)
+                    except Exception:
+                        pass
+
+                    self.stockfish_review_pv.set_fen_position(fen)
+                    top = self.stockfish_review_pv.get_top_moves(3) or []
+
+                b0 = chess.Board(fen)
+                for i, d in enumerate(top[:3]):
+                    mv0 = d.get('Move') if isinstance(d, dict) else None
+                    if not mv0:
+                        continue
+                    score = self._format_eval_short(eval_from_topmove(d))
+                    try:
+                        m = chess.Move.from_uci(str(mv0))
+                        san0 = b0.san(m)
+                    except Exception:
+                        san0 = str(mv0)
+                    lines_out.append(f"{i + 1}. {score}  {san0}")
+            except Exception:
+                lines_out = []
+
+            # Only publish if we're still on the same displayed position.
+            try:
+                if fen != self._review_display_fen():
+                    continue
+            except Exception:
+                pass
+            try:
+                with self._review_pv_lock:
+                    self.review_pv_lines = lines_out
+                    self.review_pv_pending = False
+            except Exception:
+                pass
+
+    def _play_sound_for_move_from_fen(self, fen_before: str, mv: chess.Move) -> None:
+        if not self.sound_enabled:
+            return
+        try:
+            b = chess.Board(fen_before)
+        except Exception:
+            return
+        try:
+            is_capture = b.is_capture(mv)
+        except Exception:
+            is_capture = False
+
+        try:
+            b.push(mv)
+        except Exception:
+            return
+
+        try:
+            if b.is_checkmate():
+                pg.mixer.music.load('data/sounds/mate.wav')
+            elif b.is_check():
+                pg.mixer.music.load('data/sounds/check.aiff')
+            elif is_capture:
+                pg.mixer.music.load('data/sounds/capture.mp3')
+            else:
+                pg.mixer.music.load('data/sounds/move.mp3')
+            pg.mixer.music.play(1)
+        except Exception:
+            pass
+
     def _python_chess_board(self) -> chess.Board:
         return chess.Board(self._current_fen())
 
     def request_eval(self) -> None:
         """Queue an async evaluation of the current position."""
-        if self.stockfish_eval is None or not self.eval_bar_enabled:
+        if not self.eval_bar_enabled:
+            return
+        if not self._ensure_eval_engine():
             return
         fen = self._current_fen()
         try:
@@ -493,10 +1595,15 @@ class Engine:
 
         target_row, target_col = target
 
+        premove_mode = bool(self.player_vs_ai and self.turn == self._ai_side() and not self.review_active and not self.end_popup_active)
+        active_colour = self._player_side() if premove_mode else self.turn
+
         # First click: select a piece
         if self.selected_square is None:
             piece = self.board[target_row][target_col]
-            if piece != ' ' and piece.colour[0] == self.turn:
+            if piece == ' ' and premove_mode:
+                piece = self._virtual_player_piece_at(int(target_row), int(target_col))
+            if piece != ' ' and piece is not None and piece.colour[0] == active_colour:
                 self.selected_square = (target_row, target_col)
             else:
                 self.selected_square = None
@@ -507,20 +1614,62 @@ class Engine:
             self.selected_square = None
             return
 
-        # Clicking another own piece switches selection
+        # Clicking another own piece switches selection (except in premove mode, where the user
+        # may want to premove onto that square if the piece could move there on an empty board).
         target_piece = self.board[target_row][target_col]
-        if target_piece != ' ' and target_piece.colour[0] == self.turn:
+        if target_piece == ' ' and premove_mode:
+            target_piece = self._virtual_player_piece_at(int(target_row), int(target_col))
+        if target_piece != ' ' and target_piece is not None and target_piece.colour[0] == active_colour:
+            if premove_mode:
+                # Try to treat this click as a premove destination first.
+                try:
+                    sel_piece = self.board[sel_row][sel_col]
+                    if sel_piece == ' ':
+                        sel_piece = self._virtual_player_piece_at(int(sel_row), int(sel_col))
+                    if sel_piece != ' ' and sel_piece is not None:
+                        vr, vc = self._virtual_position_for_piece(sel_piece)
+                        pseudo_positions, _pseudo_caps = self._pseudo_moves_for_piece(sel_piece, int(vr), int(vc))
+                        vdx = int(target_col) - int(vc)
+                        vdy = int(target_row) - int(vr)
+                        if (vdx, vdy) in pseudo_positions:
+                            self._set_premove(sel_row, sel_col, target_row, target_col)
+                            self.selected_square = None
+                            return
+                except Exception:
+                    pass
+
+            # Otherwise, switch selection.
             self.selected_square = (target_row, target_col)
             return
 
         sel_piece = self.board[sel_row][sel_col]
-        if sel_piece == ' ':
+        if sel_piece == ' ' and premove_mode:
+            sel_piece = self._virtual_player_piece_at(int(sel_row), int(sel_col))
+        if sel_piece == ' ' or sel_piece is None:
             self.selected_square = None
             return
 
         dx = target_col - sel_col
         dy = target_row - sel_row
-        if (dx, dy) not in sel_piece.legal_positions:
+        if not premove_mode:
+            if (dx, dy) not in sel_piece.legal_positions:
+                return
+        else:
+            # In premove mode, use pseudo-legal moves on an empty board from the piece's virtual position.
+            try:
+                vr, vc = self._virtual_position_for_piece(sel_piece)
+                pseudo_positions, _pseudo_caps = self._pseudo_moves_for_piece(sel_piece, int(vr), int(vc))
+                # Validate relative to the *virtual* position (piece may already be premoved).
+                vdx = int(target_col) - int(vc)
+                vdy = int(target_row) - int(vr)
+                if (vdx, vdy) not in pseudo_positions:
+                    return
+            except Exception:
+                pass
+
+        if premove_mode:
+            self._set_premove(sel_row, sel_col, target_row, target_col)
+            self.selected_square = None
             return
 
         # Apply the move (same semantics as drag-release path)
@@ -538,9 +1687,10 @@ class Engine:
             else:
                 self.fullmove_number += 1
                 self.turn = 'w'
-                if not self.player_vs_ai:
-                    self.last_move.append(uci)
-                    self.node = self.node.add_variation(chess.Move.from_uci(uci))
+                # This handler is only used for player input, so always record the move.
+                # (In Player vs AI, the AI move is recorded in _poll_ai_result.)
+                self.last_move.append(uci)
+                self.node = self.node.add_variation(chess.Move.from_uci(uci))
 
             self.moved()
 
@@ -548,17 +1698,91 @@ class Engine:
                 self.get_eval()
 
             if self.player_vs_ai:
-                self.ai_make_move(target_row, sel_row, sel_col)
+                # If the player's move ended the game, do not let the AI move.
+                # Otherwise Stockfish will return None (no legal moves) and the old
+                # code path would reset the game immediately, preventing the popup.
+                if not self.end_popup_active and not self.game_just_ended:
+                    self._request_ai_move_async()
                 if EVAL_ON:
                     self.get_eval()
 
         self.selected_square = None
 
     def run(self) -> None:
+        # One-time start screen.
+        if not getattr(self, '_start_menu_shown', False):
+            try:
+                self._clock_running = False
+            except Exception:
+                pass
+            try:
+                from src.engine.start_menu import StartMenu
+                menu = StartMenu(
+                    title='Start',
+                    width=self.screen.get_width(),
+                    height=self.screen.get_height(),
+                    surface=self.screen,
+                    parent=self,
+                )
+                menu.run()
+            except Exception:
+                pass
+            self._start_menu_shown = True
+            try:
+                self._clock_last_ts = time.time()
+                self._clock_running = True
+            except Exception:
+                pass
+
+        # Always tick clocks (even while browsing history).
+        try:
+            self._tick_clock()
+        except Exception:
+            pass
+
+        # While browsing history, don't apply AI results (keeps browsing stable).
+        if not getattr(self, '_game_browse_active', False):
+            try:
+                self._poll_ai_result()
+            except Exception:
+                pass
         self._ensure_layout()
         self.draw_board()
         if self.updates:
             self.update_board()
+
+        # Show legal moves for a selected piece (click-to-move).
+        # Draw BEFORE pieces so indicators don't cover capture targets.
+        if self.movement_click_enabled and self.selected_square is not None and not self.updates:
+            try:
+                premove_mode = bool(self.player_vs_ai and self.turn == self._ai_side() and not self.review_active and not self.end_popup_active)
+                active_colour = self._player_side() if premove_mode else self.turn
+
+                sel_row, sel_col = self.selected_square
+                sel_piece = self.board[sel_row][sel_col]
+                if sel_piece == ' ' and premove_mode:
+                    sel_piece = self._virtual_player_piece_at(int(sel_row), int(sel_col))
+                if sel_piece != ' ' and sel_piece is not None and sel_piece.colour[0] == active_colour:
+                    if premove_mode:
+                        old_pos = list(getattr(sel_piece, 'legal_positions', []) or [])
+                        old_caps = set(getattr(sel_piece, 'legal_captures', set()) or set())
+                        old_piece_pos = tuple(getattr(sel_piece, 'position', (0, 0)))
+                        try:
+                            vr, vc = self._virtual_position_for_piece(sel_piece)
+                            pos, _caps = self._pseudo_moves_for_piece(sel_piece, int(vr), int(vc))
+                            caps = self._capture_deltas_from_occupancy(int(vr), int(vc), pos, active_colour)
+                            sel_piece.position = (int(vr), int(vc))
+                            sel_piece.legal_positions = pos
+                            sel_piece.legal_captures = caps
+                            sel_piece.show_legal_moves(self.screen, self.offset, active_colour, self.flipped, self.board)
+                        finally:
+                            sel_piece.position = old_piece_pos
+                            sel_piece.legal_positions = old_pos
+                            sel_piece.legal_captures = old_caps
+                    else:
+                        sel_piece.show_legal_moves(self.screen, self.offset, self.turn, self.flipped, self.board)
+            except Exception:
+                pass
         piece_active = None
         for piece in self.all_pieces:
             if piece.clicked:
@@ -569,22 +1793,18 @@ class Engine:
         else:
             self.draw_pieces()
 
+        # Draw clocks after pieces.
+        try:
+            self._draw_clocks()
+        except Exception:
+            pass
+
         # Top-most overlays (must render after pieces/arrows).
         if self.review_active:
             self._draw_review_move_quality_marker()
             self._draw_review_overlay()
         if self.end_popup_active:
             self._draw_end_popup()
-
-        # Show legal moves for a selected piece (click-to-move)
-        if self.movement_click_enabled and self.selected_square is not None and not self.updates:
-            try:
-                sel_row, sel_col = self.selected_square
-                sel_piece = self.board[sel_row][sel_col]
-                if sel_piece != ' ' and sel_piece.colour[0] == self.turn:
-                    sel_piece.show_legal_moves(self.screen, self.offset, self.turn, self.flipped, self.board)
-            except Exception:
-                pass
         for event in pg.event.get():
             if event.type == pg.QUIT:
                 pg.quit()
@@ -610,15 +1830,80 @@ class Engine:
                             except Exception:
                                 pass
                         else:
-                            self._request_review_best()
+                            if not self._review_analysis_active:
+                                self._request_review_best()
                 elif event.type == pg.MOUSEBUTTONDOWN:
                     # Mouse wheel scrolls the move list in review mode
                     if event.button == 4:
                         self._review_scroll_moves(-3)
                     elif event.button == 5:
                         self._review_scroll_moves(3)
+                    elif event.button == 1:
+                        # Cog opens settings even in review mode.
+                        try:
+                            if self._settings_btn_rect is not None and self._settings_btn_rect.collidepoint(event.pos):
+                                self._open_settings_menu()
+                                self.left = False
+                                self._mouse_down_pos = None
+                                self.updates = False
+                                self.selected_square = None
+                                self._ensure_layout(force=True)
+                                continue
+                        except Exception:
+                            pass
+                        # Match main-game behavior: set left-down state and record tx/ty.
+                        self.left = True
+                        self._mouse_down_pos = pg.mouse.get_pos()
+                        self.click_left()
+                    elif event.button == 3:
+                        # Right-click highlights/arrows (board-only), like normal play.
+                        try:
+                            if self._mouse_to_square(event.pos) is not None:
+                                self.click_right()
+                        except Exception:
+                            pass
+                elif event.type == pg.MOUSEMOTION:
+                    # Match main-game behavior: only start dragging after the cursor moves a bit.
+                    if self.movement_drag_enabled and self.left and not self.updates and self._mouse_down_pos is not None:
+                        mx, my = pg.mouse.get_pos()
+                        dx = mx - self._mouse_down_pos[0]
+                        dy = my - self._mouse_down_pos[1]
+                        if (dx * dx + dy * dy) >= (self._drag_threshold_px * self._drag_threshold_px):
+                            self.updates = True
+                            # If the user started dragging, clear click-selection dots.
+                            self.selected_square = None
                 elif event.type == pg.MOUSEBUTTONUP and event.button == 1:
-                    self._handle_review_click(pg.mouse.get_pos())
+                    pos = pg.mouse.get_pos()
+                    handled = False
+                    try:
+                        handled = bool(self._handle_review_click(pos))
+                    except Exception:
+                        handled = False
+                    if not handled:
+                        self.left = False
+                        # Always clear right-click arrows/highlights on a left click, like the main game.
+                        try:
+                            self.highlighted.clear()
+                            self.arrows.clear()
+                        except Exception:
+                            pass
+
+                        if self.updates:
+                            # Drag-release path (piece clamped to cursor like main game)
+                            self._un_click_left_review()
+                        else:
+                            # Click-to-move path
+                            self._handle_review_board_click(pos)
+
+                        self.updates = False
+                        self._mouse_down_pos = None
+                elif event.type == pg.MOUSEBUTTONUP and event.button == 3:
+                    # Finish highlight/arrow (board-only)
+                    try:
+                        if not self.left and self._mouse_to_square(event.pos) is not None:
+                            self.un_click_right(True)
+                    except Exception:
+                        pass
                 elif event.type == pg.VIDEORESIZE:
                     # Keep resize responsive while in review mode.
                     self.screen = pg.display.set_mode((event.w, event.h), pg.RESIZABLE, vsync=1)
@@ -643,6 +1928,41 @@ class Engine:
             elif event.type == pg.MOUSEBUTTONDOWN:
                 self.game_just_ended = False
                 if event.button == 1 and not self.game_just_ended:
+                    # Board resize handle (bottom-right). Consume the click.
+                    try:
+                        if self._handle_board_resize_begin(event.pos):
+                            continue
+                    except Exception:
+                        pass
+
+                    # In-game action buttons.
+                    try:
+                        if self._undo_btn_rect is not None and self._undo_btn_rect.collidepoint(event.pos):
+                            self._handle_undo_pressed()
+                            continue
+                        if self._resign_btn_rect is not None and self._resign_btn_rect.collidepoint(event.pos):
+                            self._handle_resign_pressed()
+                            continue
+                    except Exception:
+                        pass
+
+                    # While browsing history, ignore board interaction clicks.
+                    if getattr(self, '_game_browse_active', False):
+                        continue
+                    # Clickable cog opens settings (instead of relying on ESC).
+                    try:
+                        if (
+                            not self.review_active
+                            and not self.end_popup_active
+                            and self._settings_btn_rect is not None
+                            and self._settings_btn_rect.collidepoint(event.pos)
+                        ):
+                            self._open_settings_menu()
+                            self.left = False
+                            self._mouse_down_pos = None
+                            continue
+                    except Exception:
+                        pass
                     self.left = True
                     self._mouse_down_pos = pg.mouse.get_pos()
                     self.click_left()
@@ -651,6 +1971,12 @@ class Engine:
                 elif event.button == 4 or event.button == 5:
                     self.flip_board()
             elif event.type == pg.MOUSEMOTION:
+                if getattr(self, '_board_resize_active', False):
+                    try:
+                        self._handle_board_resize_drag(event.pos)
+                    except Exception:
+                        pass
+                    continue
                 # Only start dragging after the cursor moves a bit.
                 if self.movement_drag_enabled and self.left and not self.updates and self._mouse_down_pos is not None:
                     mx, my = pg.mouse.get_pos()
@@ -660,6 +1986,12 @@ class Engine:
                         self.updates = True
                         self.selected_square = None
             elif event.type == pg.MOUSEBUTTONUP:
+                if event.button == 1 and getattr(self, '_board_resize_active', False):
+                    self._handle_board_resize_end()
+                    self.updates = False
+                    self.left = False
+                    self._mouse_down_pos = None
+                    continue
                 if event.button == 1 and self.updates:
                     self.left = False
                     self.un_click_left()
@@ -669,7 +2001,9 @@ class Engine:
                     # Previously this happened inside un_click_left(), which only runs on drag-release.
                     self.highlighted.clear()
                     self.arrows.clear()
-                    if self.movement_click_enabled and not self.game_just_ended:
+                    if self._ignore_next_left_mouse_up:
+                        self._ignore_next_left_mouse_up = False
+                    elif self.movement_click_enabled and not self.game_just_ended:
                         self._handle_click_to_move(pg.mouse.get_pos())
                 elif event.button == 2:
                     if len(self.game_fens) > 1:
@@ -681,11 +2015,32 @@ class Engine:
                 elif event.button == 3 and not self.left:
                     self.un_click_right(True)
                 elif event.button == 3:
+                    if self.updates:
+                        self._ignore_next_left_mouse_up = True
                     self.updates_kill()
                     self.left = False
                 self.updates = False
                 self._mouse_down_pos = None
             elif event.type == pg.KEYDOWN:
+                # In-game move browsing (left/right arrows)
+                if event.key in (pg.K_LEFT, pg.K_RIGHT):
+                    try:
+                        if not getattr(self, '_game_browse_active', False):
+                            self._enter_game_browse()
+                        if getattr(self, '_game_browse_active', False):
+                            idx = int(self._game_browse_index or 0)
+                            if event.key == pg.K_LEFT:
+                                self._set_game_browse_index(idx - 1, play_sound=True)
+                            else:
+                                # Right arrow: step forward; if at latest, exit browse.
+                                if idx >= len(self.game_fens) - 1:
+                                    self._exit_game_browse()
+                                else:
+                                    self._set_game_browse_index(idx + 1, play_sound=True)
+                    except Exception:
+                        pass
+                    continue
+
                 if event.key == pg.K_s and pg.key.get_mods() & pg.KMOD_CTRL:
                     # Save and reset (not an end-game popup)
                     dt = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -700,16 +2055,17 @@ class Engine:
                     self.flip_board()
                 if event.key == pg.K_h and pg.key.get_mods() & pg.KMOD_CTRL:
                     # Hint: temporarily ask for a strong move, then restore configured Elo strength.
-                    try:
-                        self.stockfish.update_engine_parameters({"UCI_LimitStrength": "false"})
-                    except Exception:
-                        pass
-                    try:
-                        self.stockfish.set_skill_level(20)
-                    except Exception:
-                        pass
+                    with self._play_engine_lock:
+                        try:
+                            self.stockfish.update_engine_parameters({"UCI_LimitStrength": "false"})
+                        except Exception:
+                            pass
+                        try:
+                            self.stockfish.set_skill_level(20)
+                        except Exception:
+                            pass
 
-                    best = self.stockfish.get_best_move_time(200)
+                        best = self.stockfish.get_best_move_time(200)
                     self.best_move = str(best) if best else ''
                     if best and len(best) >= 4:
                         try:
@@ -718,7 +2074,8 @@ class Engine:
                             self.hint_arrow = (start_sq, end_sq)
                         except Exception:
                             self.hint_arrow = None
-                    self._apply_ai_strength()
+                    with self._play_engine_lock:
+                        self._apply_ai_strength()
                 if event.key == pg.K_u:
                     if len(self.game_fens) > 1:
                         self.undo_move(False)
@@ -727,38 +2084,30 @@ class Engine:
                         self.undo_move(True)
                         self.un_click_right(False)
                 if event.key == pg.K_ESCAPE:
-                    self.settings.run()
+                    if getattr(self, '_game_browse_active', False):
+                        try:
+                            self._exit_game_browse()
+                        except Exception:
+                            pass
+                    else:
+                        self._open_settings_menu()
             elif event.type == pg.VIDEORESIZE:
-                # There's some code to add back window content here.
+                # Window resize: re-fit background + board layout.
                 self.screen = pg.display.set_mode((event.w, event.h), pg.RESIZABLE, vsync=1)
-                self.settings.resize_event()
-                self.background = pg.image.load('data/img/background_dark.png').convert()
-                self.background = pg.transform.smoothscale(self.background,
-                                                           (pg.display.get_window_size()[0],
-                                                            pg.display.get_window_size()[1]))
-                self.board_background = pg.image.load('data/img/boards/' + self.board_style).convert()
-                if self.default_size >= pg.display.get_window_size()[1] or self.default_size >= \
-                        pg.display.get_window_size()[0]:
-                    self.show_numbers = False
-                    if pg.display.get_window_size()[0] < pg.display.get_window_size()[1]:
-                        self.size = int((pg.display.get_window_size()[0]) / 8)
-                    else:
-                        self.size = int((pg.display.get_window_size()[1]) / 8)
-                elif (self.default_size < pg.display.get_window_size()[1] < self.default_size + 200) or (
-                        self.default_size < pg.display.get_window_size()[0] < self.default_size + 1000):
-                    self.show_numbers = True
-                    if pg.display.get_window_size()[0] < pg.display.get_window_size()[1]:
-                        self.size = int((pg.display.get_window_size()[0] - 200) / 8)
-                    else:
-                        self.size = int((pg.display.get_window_size()[1] - 200) / 8)
-                else:
-                    self.show_numbers = True
-                if self.size <= 1:
-                    self.size = 1
-                self.board_background = pg.transform.smoothscale(self.board_background,
-                                                                 (self.size * 8, self.size * 8))
-                self.offset = [pg.display.get_window_size()[0] / 2 - 4 * self.size,
-                               pg.display.get_window_size()[1] / 2 - 4 * self.size]
+                try:
+                    self.settings.resize_event()
+                except Exception:
+                    pass
+                try:
+                    self.background = pg.image.load('data/img/background_dark.png').convert()
+                    self.background = pg.transform.smoothscale(self.background, (event.w, event.h))
+                except Exception:
+                    pass
+                try:
+                    self._handle_board_resize_end()
+                except Exception:
+                    pass
+                self._ensure_layout(force=True)
 
         if self.ai_vs_ai:
             self.un_click_left()
@@ -770,9 +2119,10 @@ class Engine:
         Get board evaluation
         :return: Evaluation string
         """
-        self.stockfish.set_depth(20)
-        evaluation = print_eval(self.stockfish.get_evaluation())
-        self.stockfish.set_depth(99)
+        with self._play_engine_lock:
+            self.stockfish.set_depth(20)
+            evaluation = print_eval(self.stockfish.get_evaluation())
+            self.stockfish.set_depth(99)
         return evaluation
 
     def un_click_left(self) -> None:
@@ -792,6 +2142,26 @@ class Engine:
                 col = piece.position[1]
                 if self.board[row][col] != ' ':
                     if self.board[row][col].clicked:
+                        # If it's the AI's turn in Player vs AI, treat this as a premove.
+                        if self.player_vs_ai and self.turn == self._ai_side() and not self.end_popup_active:
+                            try:
+                                x = int((pg.mouse.get_pos()[0] - self.offset[0]) // self.size)
+                                y = int((pg.mouse.get_pos()[1] - self.offset[1]) // self.size)
+                                if self.flipped:
+                                    x = -x + 7
+                                    y = -y + 7
+                            except Exception:
+                                x, y = col, row
+
+                            try:
+                                self.board[row][col].clicked = False
+                            except Exception:
+                                pass
+                            self.updates = False
+                            self.left = False
+                            self._set_premove(row, col, y, x)
+                            break
+
                         # Make move if legal
                         if self.board[row][col].make_move(self.board, self.offset, self.turn, self.flipped, None,
                                                           None):
@@ -814,16 +2184,17 @@ class Engine:
                             elif self.turn == 'b':
                                 self.fullmove_number += 1
                                 self.turn = 'w'
-                                if not self.player_vs_ai:
-                                    move = translate_move(row, col, y, x)
-                                    if self.board[row][col] != ' ':
-                                        if self.board[row][col].piece == 'p':
-                                            if y == 7:
-                                                move += 'q'
+                                # This handler is only used for player input, so always record the move.
+                                # (In Player vs AI, the AI move is recorded in _poll_ai_result.)
+                                move = translate_move(row, col, y, x)
+                                if self.board[row][col] != ' ':
+                                    if self.board[row][col].piece == 'p':
+                                        if y == 7:
+                                            move += 'q'
 
-                                    # add move to chess.pgn node
-                                    self.last_move.append(move)
-                                    self.node = self.node.add_variation(chess.Move.from_uci(move))
+                                # add move to chess.pgn node
+                                self.last_move.append(move)
+                                self.node = self.node.add_variation(chess.Move.from_uci(move))
 
                             self.moved()
                             if self.board[y][x] != ' ':
@@ -831,12 +2202,130 @@ class Engine:
                             if EVAL_ON:
                                 self.get_eval()
                             if self.player_vs_ai:
-                                self.ai_make_move(y, row, col)
+                                # If the player's move ended the game, do not let the AI move.
+                                if not self.end_popup_active and not self.game_just_ended:
+                                    self._request_ai_move_async()
                                 if EVAL_ON:
                                     self.get_eval()
                         else:
                             self.board[row][col].clicked = False
                         break
+
+    def _un_click_left_review(self) -> None:
+        """Drag-release handler for review mode.
+
+        Mirrors the main-game drag behavior (piece clamps to cursor) but records the move
+        as an analysis variation instead of modifying the actual game/PGN.
+        """
+        if not self.review_active:
+            return
+
+        fen_before = self._review_display_fen()
+        if not fen_before:
+            # Ensure we stop dragging.
+            for piece in self.all_pieces:
+                piece.clicked = False
+            return
+
+        # Find the clicked piece (set by update_board once drag threshold is exceeded).
+        moved_piece = None
+        for piece in self.all_pieces:
+            try:
+                if piece.clicked:
+                    moved_piece = piece
+                    break
+            except Exception:
+                continue
+        if moved_piece is None:
+            return
+
+        # Attempt to apply move using piece.make_move (same as main game).
+        row = int(moved_piece.position[0])
+        col = int(moved_piece.position[1])
+        ok = False
+        try:
+            ok = bool(moved_piece.make_move(self.board, self.offset, self.turn, self.flipped, None, None))
+        except Exception:
+            ok = False
+
+        # Compute destination square from current mouse position (same logic as un_click_left).
+        try:
+            x = int((pg.mouse.get_pos()[0] - self.offset[0]) // self.size)
+            y = int((pg.mouse.get_pos()[1] - self.offset[1]) // self.size)
+            if self.flipped:
+                x = -x + 7
+                y = -y + 7
+        except Exception:
+            x, y = col, row
+
+        # Always stop dragging visuals.
+        try:
+            moved_piece.clicked = False
+        except Exception:
+            pass
+
+        if not ok:
+            # Re-sync UI to the original position.
+            self._load_fen_into_ui(fen_before)
+            self.selected_square = None
+            return
+
+        # Build UCI (auto-promote to queen like main game)
+        uci = translate_move(row, col, y, x)
+        try:
+            if moved_piece.piece.lower() == 'p' and (y == 0 or y == 7):
+                uci += 'q'
+        except Exception:
+            pass
+
+        # Validate/apply via python-chess to derive SAN and new FEN.
+        try:
+            b = chess.Board(fen_before)
+        except Exception:
+            self._load_fen_into_ui(fen_before)
+            self.selected_square = None
+            return
+
+        try:
+            mv = chess.Move.from_uci(str(uci))
+            if mv not in b.legal_moves:
+                raise ValueError('illegal')
+            san = b.san(mv)
+            b.push(mv)
+        except Exception:
+            # Fall back: cancel move and restore.
+            self._load_fen_into_ui(fen_before)
+            self.selected_square = None
+            return
+
+        # Start or continue an analysis branch.
+        if not self._review_analysis_active:
+            self._review_analysis_active = True
+            self._review_analysis_base_index = int(self.review_index)
+            self._review_variations[int(self.review_index)] = []
+        try:
+            self._review_variations[int(self._review_analysis_base_index)].append(str(san))
+        except Exception:
+            pass
+
+        new_fen = b.fen()
+        self._review_analysis_fen = new_fen
+        self.last_move = [str(uci)]
+        self._load_fen_into_ui(new_fen)
+        self.request_eval()
+        self.request_review_pv()
+
+        # Best-move arrow from mainline no longer applies.
+        self.review_best_move_uci = ''
+        self.review_arrow = None
+
+        # Sound feedback.
+        try:
+            self._play_sound_for_move_from_fen(fen_before, mv)
+        except Exception:
+            pass
+
+        self.selected_square = None
 
     def change_pieces(self, piece_type: str) -> None:
         """
@@ -864,32 +2353,25 @@ class Engine:
         Checks if the window has been resized and handles resizing
         :return: None
         """
-        self.screen = pg.display.set_mode((self.screen.get_width(), self.screen.get_height()), pg.RESIZABLE, vsync=1)
-        self.background = pg.image.load('data/img/background_dark.png').convert()
-        self.background = pg.transform.smoothscale(self.background,
-                                                   (pg.display.get_window_size()[0], pg.display.get_window_size()[1]))
-        self.board_background = pg.image.load('data/img/boards/' + self.board_style).convert()
-        if self.default_size >= pg.display.get_window_size()[1] or self.default_size >= pg.display.get_window_size()[0]:
-            self.show_numbers = False
-            if pg.display.get_window_size()[0] < pg.display.get_window_size()[1]:
-                self.size = int((pg.display.get_window_size()[0]) / 8)
-            else:
-                self.size = int((pg.display.get_window_size()[1]) / 8)
-        elif (self.default_size < pg.display.get_window_size()[1] < self.default_size + 200) or (
-                self.default_size < pg.display.get_window_size()[0] < self.default_size + 1000):
-            self.show_numbers = True
-            if pg.display.get_window_size()[0] < pg.display.get_window_size()[1]:
-                self.size = int((pg.display.get_window_size()[0] - 200) / 8)
-            else:
-                self.size = int((pg.display.get_window_size()[1] - 200) / 8)
-        else:
-            self.show_numbers = True
-        if self.size <= 1:
-            self.size = 1
-        self.board_background = pg.transform.smoothscale(self.board_background,
-                                                         (self.size * 8, self.size * 8))
-        self.offset = [pg.display.get_window_size()[0] / 2 - 4 * self.size,
-                       pg.display.get_window_size()[1] / 2 - 4 * self.size]
+        w, h = self.screen.get_width(), self.screen.get_height()
+        self.screen = pg.display.set_mode((w, h), pg.RESIZABLE, vsync=1)
+        try:
+            self.settings.resize_event()
+        except Exception:
+            pass
+
+        try:
+            self.background = pg.image.load('data/img/background_dark.png').convert()
+            self.background = pg.transform.smoothscale(self.background, (w, h))
+        except Exception:
+            pass
+
+        try:
+            self._handle_board_resize_end()
+        except Exception:
+            pass
+
+        self._ensure_layout(force=True)
 
     def change_mode(self, mode: str):
         """
@@ -919,7 +2401,9 @@ class Engine:
         self.draw_pieces()
         pg.display.flip()
         time.sleep(0.15)
-        move = self.move_strength(self.ai_elo)
+        # Legacy synchronous path (AI vs AI). Serialize access to the engine.
+        with self._play_engine_lock:
+            move = self.move_strength(self.ai_elo)
         if move is not None:
             self.last_move.append(move)
             # Do NOT append promotion suffix here.
@@ -928,9 +2412,28 @@ class Engine:
             self.node = self.node.add_variation(chess.Move.from_uci(move))
             self.engine_make_move(move)  # Making the move
         else:
-            print('Fault')
-            self.end_game('Fault')
-            self.reset_game()
+            # No legal moves available: this usually means the game is already over
+            # (checkmate/stalemate). Show the end popup rather than resetting.
+            try:
+                b = self.node.board()
+                if b.is_repetition():
+                    self.end_game("DRAW BY REPETITION")
+                elif b.is_insufficient_material():
+                    self.end_game("INSUFFICIENT MATERIAL")
+                elif b.is_stalemate():
+                    self.end_game("STALEMATE")
+                elif b.is_checkmate():
+                    outcome = b.outcome()
+                    if outcome and outcome.winner is True:
+                        self.end_game("CHECKMATE WHITE WINS !!")
+                    elif outcome and outcome.winner is False:
+                        self.end_game("CHECKMATE BLACK WINS !!")
+                    else:
+                        self.end_game("CHECKMATE")
+                else:
+                    self.end_game('Fault')
+            except Exception:
+                self.end_game('Fault')
 
     def move_strength(self, elo: int) -> str | None:
         """
@@ -939,7 +2442,8 @@ class Engine:
         :param elo: requested Elo
         :return: Move - the algebraic notation of the move as a string
         """
-        self._apply_ai_strength()
+        with self._play_engine_lock:
+            self._apply_ai_strength()
 
         # Simple think-time scaling. Smaller time at low Elo makes play weaker/less consistent.
         try:
@@ -947,24 +2451,39 @@ class Engine:
         except Exception:
             elo_i = self.ai_elo
 
+        # IMPORTANT: movetime heavily affects playing strength.
+        # The previous cap (~260ms) made even very high Elo settings too weak.
         if elo_i <= 800:
-            think_ms = 40
+            think_ms = 80
         elif elo_i <= 1200:
-            think_ms = 70
+            think_ms = 140
         elif elo_i <= 1600:
-            think_ms = 120
-        elif elo_i <= 2000:
-            think_ms = 180
-        else:
             think_ms = 260
+        elif elo_i <= 2000:
+            think_ms = 450
+        elif elo_i <= 2400:
+            think_ms = 800
+        elif elo_i <= 2800:
+            think_ms = 1400
+        else:
+            think_ms = 2200
 
         # Extra weakening below typical Stockfish Elo floor: pick from top moves randomly.
         # This helps achieve "beginner" strengths in practice.
         if elo_i < 1200:
             top_n = 4 if elo_i < 900 else 3
             try:
+                # get_top_moves uses MultiPV. Ensure it's high enough for this query.
+                try:
+                    self.stockfish.update_engine_parameters({"MultiPV": int(top_n)})
+                except Exception:
+                    pass
                 top_moves = self.stockfish.get_top_moves(top_n) or []
                 legal = [m.get('Move') for m in top_moves if isinstance(m, dict) and m.get('Move')]
+                try:
+                    self.stockfish.update_engine_parameters({"MultiPV": 1})
+                except Exception:
+                    pass
                 if legal:
                     # Bias toward the best move as Elo increases.
                     if elo_i < 800 and len(legal) >= 2:
@@ -978,16 +2497,40 @@ class Engine:
     def _apply_ai_strength(self) -> None:
         """Apply current AI-strength settings to the Stockfish instance."""
         try:
+            elo_i = int(self.ai_elo)
+        except Exception:
+            elo_i = 800
+            self.ai_elo = elo_i
+
+        # Per stockfish-python docs:
+        # - set_elo_rating() ignores skill level
+        # - set_skill_level() ignores ELO rating
+        # - UCI_LimitStrength must be set appropriately.
+
+        # Treat the top end as effectively "max strength".
+        if elo_i >= 2900:
+            try:
+                self.stockfish.update_engine_parameters({"UCI_LimitStrength": "false"})
+            except Exception:
+                pass
+            try:
+                self.stockfish.set_skill_level(20)
+            except Exception:
+                pass
+            return
+
+        # Otherwise use the Elo limiter.
+        try:
             self.stockfish.update_engine_parameters({"UCI_LimitStrength": "true"})
         except Exception:
             pass
         try:
-            self.stockfish.set_elo_rating(int(self.ai_elo))
+            self.stockfish.set_elo_rating(int(elo_i))
         except Exception:
             pass
-        # Keep Skill Level low; Elo limiter does most of the work.
+        # Keep skill at max so we are not accidentally weakening the engine.
         try:
-            self.stockfish.set_skill_level(0)
+            self.stockfish.set_skill_level(20)
         except Exception:
             pass
 
@@ -997,7 +2540,8 @@ class Engine:
             self.ai_elo = int(elo)
         except Exception:
             return
-        self._apply_ai_strength()
+        with self._play_engine_lock:
+            self._apply_ai_strength()
 
     def change_ai_strength(self, num: int) -> None:
         """
@@ -1015,6 +2559,10 @@ class Engine:
         :param left_click: is currently clicking left?
         :return: None
         """
+        # If right-click was used only to cancel premoves, txr/tyr may be None.
+        if self.txr is None or self.tyr is None:
+            return
+
         txr = int((pg.mouse.get_pos()[0] - self.offset[0]) // self.size)
         tyr = int((pg.mouse.get_pos()[1] - self.offset[1]) // self.size)
         if self.flipped:
@@ -1055,6 +2603,13 @@ class Engine:
         self.prev_board = self.board
         self.selected_square = None
         self.hint_arrow = None
+
+        # Apply increment to the side that just moved.
+        try:
+            mover = 'b' if self.turn == 'w' else 'w'
+            self._on_move_completed_clock(mover)
+        except Exception:
+            pass
         eps_moved_made = False
         for i, row in enumerate(self.board):
             for j, piece in enumerate(row):
@@ -1137,7 +2692,11 @@ class Engine:
         # print('Number of legal moves', legal_moves)
         # print FEN notation of position
         self.game_fens.append(self._current_fen())
-        self.stockfish.set_fen_position(self.game_fens[-1])
+        try:
+            with self._play_engine_lock:
+                self.stockfish.set_fen_position(self.game_fens[-1])
+        except Exception:
+            pass
 
         # async eval update
         self.request_eval()
@@ -1188,6 +2747,10 @@ class Engine:
         # condition is detected twice). This prevents duplicate PGN files.
         if self.end_popup_active or self.game_just_ended:
             return
+        try:
+            self._clock_running = False
+        except Exception:
+            pass
         self.game_just_ended = True
         self.end_popup_active = True
         self.end_popup_text = end_text
@@ -1203,6 +2766,16 @@ class Engine:
         Resets the game to the starting FEN position
         :return: None
         """
+        # If the previous game ended, a reset should take the user back to the start setup.
+        # The run-loop shows the StartMenu when _start_menu_shown is False.
+        try:
+            if bool(getattr(self, 'game_just_ended', False)):
+                self._start_menu_shown = False
+                self._clock_running = False
+                self._clock_last_ts = None
+        except Exception:
+            pass
+
         self.updates_kill()
         self.board, self.turn, self.castle_rights, self.en_passant_square, self.halfmoves_since_last_capture, self.fullmove_number = parse_FEN(
             self.game_fens[0])
@@ -1239,8 +2812,12 @@ class Engine:
             self.game.headers["White"] = "Computer"
         elif self.player_vs_ai:
             self.game.headers["Event"] = "Player Vs Computer"
-            self.game.headers["Black"] = "Computer"
-            self.game.headers["White"] = "Player"
+            if self._ai_side() == 'w':
+                self.game.headers["White"] = "Computer"
+                self.game.headers["Black"] = "Player"
+            else:
+                self.game.headers["Black"] = "Computer"
+                self.game.headers["White"] = "Player"
         else:
             self.game.headers["Event"] = "Player Vs Player"
             self.game.headers["Black"] = "Player"
@@ -1250,9 +2827,32 @@ class Engine:
         self.game.headers["BlackElo"] = "?"
         self._set_pgn_strength_headers()
         self.node = self.game
-        self.stockfish.set_fen_position(self.game_fens[0])
+        self._clear_premove()
+        try:
+            # Reset clocks for a new game.
+            self._reset_clocks(start_running=True)
+        except Exception:
+            pass
+        try:
+            self.ai_thinking = False
+            self._ai_result = ''
+            self._ai_result_fen = ''
+        except Exception:
+            pass
+        try:
+            with self._play_engine_lock:
+                self.stockfish.set_fen_position(self.game_fens[0])
+        except Exception:
+            pass
         self.update_legal_moves()
         self.request_eval()
+
+        # If PvAI and it's the AI side to move (e.g., player chose Black), start AI immediately.
+        try:
+            if self.player_vs_ai and not self.end_popup_active and not self.game_just_ended and self.turn == self._ai_side():
+                self._request_ai_move_async()
+        except Exception:
+            pass
 
         self.end_popup_active = False
         self.end_popup_text = ''
@@ -1266,6 +2866,13 @@ class Engine:
         :return: None
         """
         if len(self.last_move) > 0:
+            # Ensure no piece remains in a dragged/clicked visual state.
+            try:
+                self.updates_kill()
+                self.selected_square = None
+                self._mouse_down_pos = None
+            except Exception:
+                pass
             if one:
                 self.board, self.turn, self.castle_rights, self.en_passant_square, self.halfmoves_since_last_capture, self.fullmove_number = parse_FEN(
                     self.game_fens[0])
@@ -1273,11 +2880,11 @@ class Engine:
                 self.game_fens.pop()
                 self.board, self.turn, self.castle_rights, self.en_passant_square, self.halfmoves_since_last_capture, self.fullmove_number = parse_FEN(
                     self.game_fens[-1])
-            for p in self.all_pieces:
+            for p in list(self.all_pieces):
                 self.all_pieces.remove(p)
-            for p in self.black_pieces:
+            for p in list(self.black_pieces):
                 self.black_pieces.remove(p)
-            for p in self.white_pieces:
+            for p in list(self.white_pieces):
                 self.white_pieces.remove(p)
             for i, row in enumerate(self.board):
                 for j, piece in enumerate(row):
@@ -1292,12 +2899,17 @@ class Engine:
                         pass
             for piece in self.all_pieces:
                 piece.change_piece_set(self.piece_type)
+                try:
+                    piece.clicked = False
+                except Exception:
+                    pass
             self.last_move.pop()
             self.node = self.node.parent  # allows for undoes to show in analysis on https://chess.com/analysis
             if not self.player_vs_ai and not self.ai_vs_ai and self.flip_enabled:
                 self.flip_board()
 
-            self.update_board()
+            # Do NOT call update_board() here. It can latch onto the mouse cursor and
+            # make a piece follow the cursor even when the mouse button isn't held.
             self.update_legal_moves()
             self.request_eval()
 
@@ -1318,6 +2930,8 @@ class Engine:
         # clear all moves first (prevents stale highlights)
         for piece in self.all_pieces:
             piece.legal_positions = []
+            if hasattr(piece, 'legal_captures'):
+                piece.legal_captures = set()
 
         # populate legal moves for side to move
         for move in pc_board.legal_moves:
@@ -1325,7 +2939,10 @@ class Engine:
             to_row, to_col = self._coords_from_chess_square(move.to_square)
             piece = self.board[from_row][from_col]
             if piece != ' ' and piece.colour[0] == self.turn:
-                piece.legal_positions.append((to_col - from_col, to_row - from_row))
+                dx_dy = (to_col - from_col, to_row - from_row)
+                piece.legal_positions.append(dx_dy)
+                if hasattr(piece, 'legal_captures') and pc_board.is_capture(move):
+                    piece.legal_captures.add(dx_dy)
 
         # attacked squares (used by debug overlay)
         attacked: set[tuple[int, int]] = set()
@@ -1482,11 +3099,290 @@ class Engine:
         handle Right click event. Stores the co-ordinates of the click. Used for highlighting and arrows
         :return: None
         """
+        # If a premove is queued, right-click cancels all premoves (and does not create arrows/highlights).
+        try:
+            if self.player_vs_ai and not self.review_active and not self.end_popup_active and self._premove_queue:
+                self._clear_premove()
+                self.selected_square = None
+                self.txr = None
+                self.tyr = None
+                return
+        except Exception:
+            pass
         self.txr = int((pg.mouse.get_pos()[0] - self.offset[0]) // self.size)
         self.tyr = int((pg.mouse.get_pos()[1] - self.offset[1]) // self.size)
         if self.flipped:
             self.txr = 7 - self.txr
             self.tyr = 7 - self.tyr
+
+    def _board_rect(self) -> pg.Rect:
+        return pg.Rect(int(self.offset[0]), int(self.offset[1]), int(self.size * 8), int(self.size * 8))
+
+    def _handle_board_resize_begin(self, pos: tuple[int, int]) -> bool:
+        """Start a board resize drag if the user clicked the bottom-right handle."""
+        if self.review_active or self.end_popup_active:
+            return False
+        rect = getattr(self, '_board_resize_handle_rect', None)
+        if rect is None:
+            return False
+        try:
+            if rect.collidepoint(pos):
+                self._board_resize_active = True
+                self._board_resize_start_mouse = (int(pos[0]), int(pos[1]))
+                self._board_resize_start_size = int(self.size)
+                # Cancel any in-progress piece drag/selection.
+                self.updates_kill()
+                self.selected_square = None
+                return True
+        except Exception:
+            return False
+        return False
+
+    def _handle_board_resize_drag(self, pos: tuple[int, int]) -> None:
+        if not getattr(self, '_board_resize_active', False):
+            return
+        if self._board_resize_start_mouse is None or self._board_resize_start_size is None:
+            return
+        try:
+            mx0, my0 = self._board_resize_start_mouse
+            dx = int(pos[0]) - int(mx0)
+            dy = int(pos[1]) - int(my0)
+            delta = max(dx, dy)
+            # Convert pixel delta to per-square delta.
+            desired_size = int(self._board_resize_start_size + round(delta / 8.0))
+        except Exception:
+            return
+
+        base = int(getattr(self, '_board_base_size', max(1, int(self.size))))
+        desired_size = max(10, min(base, desired_size))
+        try:
+            self._board_user_scale = max(0.45, min(1.0, float(desired_size) / float(max(1, base))))
+        except Exception:
+            pass
+        self._layout_cache_key = None
+        self._ensure_layout(force=True)
+
+    def _handle_board_resize_end(self) -> None:
+        self._board_resize_active = False
+        self._board_resize_start_mouse = None
+        self._board_resize_start_size = None
+
+    def _draw_game_action_buttons(self) -> None:
+        """Draw small Undo/Resign buttons on the game screen."""
+        if self.end_popup_active or self.review_active:
+            self._undo_btn_rect = None
+            self._resign_btn_rect = None
+            return
+
+        board_rect = self._board_rect()
+        margin = max(8, int(self.size * 0.12))
+        box_h = max(26, int(self.size * 0.55))
+        y = max(6, int(board_rect.top - box_h - margin))
+
+        btn_h = max(24, int(box_h * 0.92))
+        btn_w = max(88, int(self.size * 1.55))
+        gap = max(8, int(self.size * 0.16))
+        x0 = int(board_rect.left)
+
+        disabled = bool(getattr(self, '_game_browse_active', False))
+        fg = (210, 210, 210) if not disabled else (140, 140, 140)
+        bg = (20, 20, 20)
+        border = (80, 80, 80)
+
+        def draw_btn(label: str, x: int) -> pg.Rect:
+            r = pg.Rect(int(x), int(y), int(btn_w), int(btn_h))
+            try:
+                pg.draw.rect(self.screen, bg, r, border_radius=8)
+                pg.draw.rect(self.screen, border, r, width=2, border_radius=8)
+            except Exception:
+                pass
+            try:
+                surf = self.font.render(label, True, fg)
+                self.screen.blit(surf, (r.centerx - surf.get_width() // 2, r.centery - surf.get_height() // 2))
+            except Exception:
+                pass
+            return r
+
+        self._undo_btn_rect = draw_btn('Undo', x0)
+        self._resign_btn_rect = draw_btn('Resign', x0 + btn_w + gap)
+
+    def _handle_undo_pressed(self) -> None:
+        if self.end_popup_active or self.review_active:
+            return
+        if getattr(self, '_game_browse_active', False):
+            return
+
+        # Cancel any in-progress click/drag immediately so no piece can get "stuck" to the cursor.
+        try:
+            self._ignore_next_left_mouse_up = True
+        except Exception:
+            pass
+        try:
+            self.updates_kill()
+            self.selected_square = None
+            self._mouse_down_pos = None
+        except Exception:
+            pass
+        try:
+            for p in self.all_pieces:
+                p.clicked = False
+        except Exception:
+            pass
+        # Cancel any pending AI work so we don't apply a move for an old position.
+        try:
+            self.ai_thinking = False
+        except Exception:
+            pass
+        try:
+            self._ai_result = ''
+            self._ai_result_fen = ''
+        except Exception:
+            pass
+        try:
+            while True:
+                self._ai_move_queue.get_nowait()
+        except Exception:
+            pass
+
+        # In PvAI:
+        # - If AI hasn't moved yet (AI to move / AI thinking), undo ONLY the player's last move (1 ply).
+        # - Otherwise (AI already replied), undo both plies to return to the player's turn.
+        try:
+            if self.player_vs_ai:
+                ai_pending = bool(getattr(self, 'ai_thinking', False)) or (self.turn == self._ai_side())
+                plies = 1 if ai_pending else 2
+                for _ in range(int(plies)):
+                    if len(self.last_move) <= 0:
+                        break
+                    self.undo_move(one=bool(len(self.last_move) <= 1))
+            else:
+                self.undo_move(one=bool(len(self.last_move) <= 1))
+        except Exception:
+            pass
+        # Clear premoves + any pending AI result for the old position.
+        try:
+            self._clear_premove()
+        except Exception:
+            pass
+        # (ai_thinking / results already cleared above)
+        try:
+            self._clock_last_ts = time.time()
+        except Exception:
+            pass
+
+        # If after undo it's the AI to move, request again.
+        try:
+            if self.player_vs_ai and self.turn == self._ai_side() and not self.end_popup_active and not self.game_just_ended:
+                self._request_ai_move_async()
+        except Exception:
+            pass
+
+    def _handle_resign_pressed(self) -> None:
+        if self.end_popup_active or self.review_active:
+            return
+        if getattr(self, '_game_browse_active', False):
+            return
+
+        # Swallow the corresponding mouse-up and cancel any in-progress drag.
+        try:
+            self._ignore_next_left_mouse_up = True
+        except Exception:
+            pass
+        try:
+            self.updates_kill()
+            self.selected_square = None
+            self._mouse_down_pos = None
+        except Exception:
+            pass
+        # In PvAI, resign the player's side. In PvP, resign side-to-move.
+        side = 'w'
+        try:
+            side = self._player_side() if self.player_vs_ai else self.turn
+        except Exception:
+            side = 'w'
+        if side == 'w':
+            self.end_game('WHITE RESIGNS — BLACK WINS')
+        else:
+            self.end_game('BLACK RESIGNS — WHITE WINS')
+
+    def _enter_game_browse(self) -> None:
+        if self.end_popup_active or self.review_active:
+            return
+        if not getattr(self, 'game_fens', None):
+            return
+        self._game_browse_active = True
+        self._game_browse_index = max(0, len(self.game_fens) - 1)
+        try:
+            self._game_browse_live_turn = str(self.turn)
+        except Exception:
+            self._game_browse_live_turn = None
+        try:
+            self._game_browse_saved_fen = self._current_fen()
+        except Exception:
+            try:
+                self._game_browse_saved_fen = self.game_fens[-1]
+            except Exception:
+                self._game_browse_saved_fen = None
+        # Do not stop clocks while browsing.
+        try:
+            self.updates_kill()
+            self.selected_square = None
+        except Exception:
+            pass
+
+    def _exit_game_browse(self) -> None:
+        if not getattr(self, '_game_browse_active', False):
+            return
+        self._game_browse_active = False
+        self._game_browse_index = None
+        try:
+            fen = self._game_browse_saved_fen or (self.game_fens[-1] if self.game_fens else '')
+            if fen:
+                self._load_fen_into_ui(fen)
+        except Exception:
+            pass
+        # Clocks continue running while browsing; just reset tick baseline.
+        try:
+            self._clock_last_ts = time.time()
+        except Exception:
+            pass
+        self._game_browse_saved_fen = None
+        self._game_browse_live_turn = None
+
+    def _set_game_browse_index(self, new_index: int, play_sound: bool = True) -> None:
+        if not getattr(self, '_game_browse_active', False):
+            return
+        if not self.game_fens:
+            return
+        old = int(self._game_browse_index or 0)
+        new = int(max(0, min(int(new_index), len(self.game_fens) - 1)))
+        if new == old:
+            return
+
+        if play_sound:
+            try:
+                # Use the move that transitions between positions.
+                if new > old:
+                    # stepping forward: move index == old
+                    mi = old
+                    fen_before = self.game_fens[mi]
+                    uci = self.last_move[mi] if mi < len(self.last_move) else ''
+                else:
+                    # stepping back: move that was played from new -> new+1
+                    mi = new
+                    fen_before = self.game_fens[mi]
+                    uci = self.last_move[mi] if mi < len(self.last_move) else ''
+                if uci:
+                    mv = chess.Move.from_uci(str(uci))
+                    self._play_sound_for_move_from_fen(str(fen_before), mv)
+            except Exception:
+                pass
+
+        try:
+            self._game_browse_index = new
+            self._load_fen_into_ui(self.game_fens[new])
+        except Exception:
+            pass
 
     def click_left(self) -> None:
         """
@@ -1503,19 +3399,70 @@ class Engine:
         :return: None
         """
         try:
+            premove_mode = bool(self.player_vs_ai and self.turn == self._ai_side() and not self.review_active and not self.end_popup_active)
+            active_colour = self._player_side() if premove_mode else self.turn
+
             if not self.flipped:
                 if -1 < self.tx < 8 and -1 < self.ty < 8:
-                    if self.board[self.ty][self.tx] != ' ':
-                        self.board[self.ty][self.tx].clicked = True
-                        self.board[self.ty][self.tx].show_legal_moves(self.screen, self.offset, self.turn, self.flipped,
-                                                                      self.board)
+                    piece = self.board[self.ty][self.tx]
+                    virt_pos = None
+                    if piece == ' ' and premove_mode:
+                        piece = self._virtual_player_piece_at(int(self.ty), int(self.tx))
+                        if piece is not None:
+                            virt_pos = (int(self.ty), int(self.tx))
+                    if piece != ' ' and piece is not None:
+                        piece.clicked = True
+                        if premove_mode and getattr(piece, 'colour', '')[:1] == active_colour:
+                            old_pos = list(getattr(piece, 'legal_positions', []) or [])
+                            old_caps = set(getattr(piece, 'legal_captures', set()) or set())
+                            old_piece_pos = tuple(getattr(piece, 'position', (0, 0)))
+                            try:
+                                if virt_pos is None:
+                                    virt_pos = self._virtual_position_for_piece(piece)
+                                pos, _caps = self._pseudo_moves_for_piece(piece, int(virt_pos[0]), int(virt_pos[1]))
+                                caps = self._capture_deltas_from_occupancy(int(virt_pos[0]), int(virt_pos[1]), pos, active_colour)
+                                piece.position = (int(virt_pos[0]), int(virt_pos[1]))
+                                piece.legal_positions = pos
+                                piece.legal_captures = caps
+                                piece.show_legal_moves(self.screen, self.offset, active_colour, self.flipped, self.board)
+                            finally:
+                                piece.position = old_piece_pos
+                                piece.legal_positions = old_pos
+                                piece.legal_captures = old_caps
+                        else:
+                            piece.show_legal_moves(self.screen, self.offset, self.turn, self.flipped, self.board)
             else:
                 if -1 < self.tx < 8 and -1 < self.ty < 8:
-                    if self.board[-self.ty + 7][-self.tx + 7] != ' ':
-                        self.board[-self.ty + 7][-self.tx + 7].clicked = True
-                        self.board[-self.ty + 7][-self.tx + 7].show_legal_moves(self.screen, self.offset, self.turn,
-                                                                                self.flipped, self.board)
-        except:
+                    rr, cc = (-self.ty + 7), (-self.tx + 7)
+                    piece = self.board[rr][cc]
+                    virt_pos = None
+                    if piece == ' ' and premove_mode:
+                        # Mouse is over the virtual square in flipped coords.
+                        piece = self._virtual_player_piece_at(int(rr), int(cc))
+                        if piece is not None:
+                            virt_pos = (int(rr), int(cc))
+                    if piece != ' ' and piece is not None:
+                        piece.clicked = True
+                        if premove_mode and getattr(piece, 'colour', '')[:1] == active_colour:
+                            old_pos = list(getattr(piece, 'legal_positions', []) or [])
+                            old_caps = set(getattr(piece, 'legal_captures', set()) or set())
+                            old_piece_pos = tuple(getattr(piece, 'position', (0, 0)))
+                            try:
+                                if virt_pos is None:
+                                    virt_pos = self._virtual_position_for_piece(piece)
+                                pos, _caps = self._pseudo_moves_for_piece(piece, int(virt_pos[0]), int(virt_pos[1]))
+                                caps = self._capture_deltas_from_occupancy(int(virt_pos[0]), int(virt_pos[1]), pos, active_colour)
+                                piece.position = (int(virt_pos[0]), int(virt_pos[1]))
+                                piece.legal_positions = pos
+                                piece.legal_captures = caps
+                                piece.show_legal_moves(self.screen, self.offset, active_colour, self.flipped, self.board)
+                            finally:
+                                piece.position = old_piece_pos
+                                piece.legal_positions = old_pos
+                                piece.legal_captures = old_caps
+                        else:
+                            piece.show_legal_moves(self.screen, self.offset, self.turn, self.flipped, self.board)
+        except Exception:
             pass
 
     def draw_board(self) -> None:
@@ -1527,12 +3474,25 @@ class Engine:
         self.screen.blit(self.board_background, (self.offset[0], self.offset[1]))
         square1 = None
         square2 = None
-        if len(self.last_move) > 1:
-            square1 = square_on(self.last_move[-1][0:2])
-            square2 = square_on(self.last_move[-1][2:4])
-        elif len(self.last_move) == 1:
-            square1 = square_on(self.last_move[0][0:2])
-            square2 = square_on(self.last_move[0][2:4])
+
+        # While browsing history, show last-move markers for the browsed position.
+        last_moves = self.last_move
+        try:
+            if getattr(self, '_game_browse_active', False) and self._game_browse_index is not None:
+                i = int(self._game_browse_index)
+                if i <= 0:
+                    last_moves = []
+                else:
+                    last_moves = self.last_move[: min(len(self.last_move), i)]
+        except Exception:
+            last_moves = self.last_move
+
+        if len(last_moves) > 1:
+            square1 = square_on(last_moves[-1][0:2])
+            square2 = square_on(last_moves[-1][2:4])
+        elif len(last_moves) == 1:
+            square1 = square_on(last_moves[0][0:2])
+            square2 = square_on(last_moves[0][2:4])
         count = 1
         for row in range(8):
             for col in range(8):
@@ -1549,7 +3509,7 @@ class Engine:
                     self.screen.blit(surface,
                                      (self.offset[0] + self.size * col_new, self.offset[1] + self.size * row_new))
                 else:
-                    if (row, col) in self.highlighted:
+                    if (row, col) in self.highlighted or (row, col) in self._premove_squares:
                         surface.fill(self.colours4[count % 2])
                         self.screen.blit(surface,
                                          (self.offset[0] + self.size * col_new, self.offset[1] + self.size * row_new))
@@ -1590,10 +3550,10 @@ class Engine:
                 self.screen.blit(surface, (self.offset[0] + self.size / 2 - 8 + self.size * i,
                                            self.offset[
                                                1] + 17 * self.size / 2 - 25))  # draw letters
-            # Avoid overlapping HUD text during review/popup overlays.
-            if not self.review_active and not self.end_popup_active:
-                surface = self.font.render('Settings = ESC', False, (255, 255, 255))
-                self.screen.blit(surface, (20, 20))
+
+        # Settings cog: always available (including review), but hide during end popup.
+        if not self.end_popup_active:
+            self._settings_btn_rect = self._draw_settings_button((20, 20), size=34)
             # Eval bar: show only the bar; show numeric value on hover
             if self.eval_bar_enabled:
                 rect = self._draw_eval_bar()
@@ -1610,8 +3570,93 @@ class Engine:
                 # Hint is now rendered as a blue arrow (Ctrl+H)
                 pass
 
+            # In-game action buttons (normal play only)
+            try:
+                if not self.review_active:
+                    self._draw_game_action_buttons()
+            except Exception:
+                pass
+
         # Note: review overlay and end-game popup are rendered in run() after pieces,
         # so they are not obscured by piece sprites.
+
+        # Board resize handle (bottom-right). Kept subtle and within the board.
+        try:
+            if not self.review_active and not self.end_popup_active:
+                br = self._board_rect()
+                hs = max(11, int(self.size * 0.22))
+                grip = pg.Rect(br.right - hs, br.bottom - hs, hs, hs)
+
+                # Keep a slightly larger hitbox than the drawn grip, but don't draw any solid fill
+                # so we don't obscure the square underneath.
+                hit = max(hs, int(hs * 1.35))
+                handle = pg.Rect(br.right - hit, br.bottom - hit, hit, hit)
+                self._board_resize_handle_rect = handle
+
+                # Draw a small diagonal "grip" using alpha so it's visible but not blocking.
+                surf = pg.Surface((grip.w, grip.h), pg.SRCALPHA)
+                light = (235, 235, 235, 200)
+                dark = (0, 0, 0, 110)
+                step = max(4, int(grip.w / 4))
+                pad = 2
+                for i in range(3):
+                    off = pad + i * step
+                    # shadow line
+                    pg.draw.line(surf, dark, (grip.w - 1 - off, grip.h - 1), (grip.w - 1, grip.h - 1 - off), width=1)
+                    # highlight line (slightly inset)
+                    pg.draw.line(surf, light, (grip.w - 2 - off, grip.h - 2), (grip.w - 2, grip.h - 2 - off), width=1)
+                self.screen.blit(surf, (grip.x, grip.y))
+        except Exception:
+            pass
+
+    def _draw_settings_button(self, pos: tuple[int, int], size: int = 34) -> pg.Rect:
+        """Draw a small cog icon at pos (top-left). Returns its clickable rect."""
+        x, y = int(pos[0]), int(pos[1])
+        rect = pg.Rect(x, y, size, size)
+
+        # Background hit area (subtle)
+        bg = pg.Surface((size, size), pg.SRCALPHA)
+        bg.fill((0, 0, 0, 0))
+        pg.draw.rect(bg, (0, 0, 0, 80), bg.get_rect(), border_radius=max(6, size // 5))
+        self.screen.blit(bg, rect.topleft)
+
+        cx = x + size // 2
+        cy = y + size // 2
+        outer_r = max(9, size // 2 - 6)
+        inner_r = max(4, outer_r // 2)
+
+        # Teeth
+        tooth_len = max(4, size // 6)
+        tooth_w = max(2, size // 10)
+        for i in range(8):
+            ang = i * (3.14159265 / 4.0)
+            vec = pg.math.Vector2(1, 0).rotate_rad(ang)
+            tx = cx + int(vec.x * (outer_r + tooth_len // 2))
+            ty = cy + int(vec.y * (outer_r + tooth_len // 2))
+            tooth_surf = pg.Surface((tooth_len, tooth_w), pg.SRCALPHA)
+            tooth_surf.fill((220, 220, 220, 230))
+            tooth_surf = pg.transform.rotate(tooth_surf, -i * 45)
+            tr = tooth_surf.get_rect(center=(tx, ty))
+            self.screen.blit(tooth_surf, tr.topleft)
+
+        # Rings
+        pg.draw.circle(self.screen, (230, 230, 230), (cx, cy), outer_r, width=2)
+        pg.draw.circle(self.screen, (230, 230, 230), (cx, cy), inner_r, width=2)
+
+        # Hover outline
+        try:
+            if rect.collidepoint(pg.mouse.get_pos()):
+                pg.draw.rect(
+                    self.screen,
+                    (120, 120, 120),
+                    rect,
+                    width=1,
+                    border_radius=max(6, size // 5),
+                )
+        except Exception:
+            pass
+
+        return rect
 
     def _draw_end_popup(self) -> None:
         # Dim background
@@ -1716,7 +3761,7 @@ class Engine:
             f"Review: {name}",
             f"Ply: {ply}/{total} (Left/Right, ESC exits)",
         ]
-        if self.review_show_best_move and self.review_best_move_uci:
+        if (not self._review_analysis_active) and self.review_show_best_move and self.review_best_move_uci:
             lines.append(f"Best: {self.review_best_move_uci}")
         if self.review_acpl_white is not None and self.review_acpl_black is not None:
             lines.append(f"ACPL  White: {self.review_acpl_white:.0f}  Black: {self.review_acpl_black:.0f}")
@@ -1738,6 +3783,56 @@ class Engine:
             surf = self.eval_font.render(t, False, (255, 255, 255))
             self.screen.blit(surf, (xx, yy))
             yy += line_h
+
+        # Top 3 engine lines (PV) for the currently displayed position.
+        yy += 6
+        pv_title = self.eval_font.render("Top lines:", False, (255, 255, 255))
+        self.screen.blit(pv_title, (xx, yy))
+        yy += line_h
+
+        pv_lines: list[str] = []
+        pv_pending = False
+        try:
+            # Never block the render loop waiting for Stockfish.
+            if self._review_pv_lock.acquire(False):
+                try:
+                    pv_lines = list(self.review_pv_lines or [])
+                    pv_pending = bool(self.review_pv_pending)
+                finally:
+                    self._review_pv_lock.release()
+            else:
+                pv_pending = True
+        except Exception:
+            pv_lines = []
+            pv_pending = False
+
+        if pv_pending and not pv_lines:
+            pv_lines = ["Analyzing..."]
+        if not pv_lines:
+            pv_lines = ["(click board to analyze)"]
+
+        # Limit rendering to 3-ish lines.
+        for t in pv_lines[:3]:
+            surf = self.eval_font.render(str(t), False, (200, 220, 255))
+            self.screen.blit(surf, (xx, yy))
+            yy += line_h
+
+        # Variation line (user analysis moves)
+        try:
+            if self._review_analysis_active:
+                base = int(self._review_analysis_base_index)
+                var = self._review_variations.get(base, [])
+                if var:
+                    yy += 2
+                    vtitle = self.eval_font.render("Variation:", False, (255, 255, 255))
+                    self.screen.blit(vtitle, (xx, yy))
+                    yy += line_h
+                    vtxt = ' '.join(var)
+                    vsurf = self.eval_font.render(vtxt, False, (220, 220, 220))
+                    self.screen.blit(vsurf, (xx, yy))
+                    yy += line_h
+        except Exception:
+            pass
 
         yy += 8
         title = self.eval_font.render("Moves:", False, (255, 255, 255))
@@ -1917,11 +4012,127 @@ class Engine:
 
     def _handle_review_click(self, pos: tuple[int, int]) -> None:
         if not self.review_active:
-            return
+            return False
         for rect, ply_index in getattr(self, '_review_move_hitboxes', []):
             if rect.collidepoint(pos):
                 self._review_set_index(int(ply_index), play_sound=True)
+                return True
+        return False
+
+    def _handle_review_board_click(self, mouse_pos: tuple[int, int]) -> None:
+        if not self.review_active:
+            return
+
+        # Respect movement mode.
+        if not self.movement_click_enabled:
+            return
+
+        target = self._mouse_to_square(mouse_pos)
+        if target is None:
+            self.selected_square = None
+            return
+
+        target_row, target_col = target
+
+        fen = self._review_display_fen()
+        if not fen:
+            self.selected_square = None
+            return
+
+        try:
+            board = chess.Board(fen)
+        except Exception:
+            self.selected_square = None
+            return
+
+        # First click: select a piece that belongs to side-to-move.
+        if self.selected_square is None:
+            try:
+                sq = self._chess_square_from_coords(target_row, target_col)
+                piece = board.piece_at(sq)
+                if piece is None:
+                    self.selected_square = None
+                    return
+                if piece.color != board.turn:
+                    self.selected_square = None
+                    return
+                self.selected_square = (target_row, target_col)
                 return
+            except Exception:
+                self.selected_square = None
+                return
+
+        sel_row, sel_col = self.selected_square
+        if (sel_row, sel_col) == (target_row, target_col):
+            self.selected_square = None
+            return
+
+        try:
+            from_sq = self._chess_square_from_coords(sel_row, sel_col)
+            to_sq = self._chess_square_from_coords(target_row, target_col)
+        except Exception:
+            self.selected_square = None
+            return
+
+        promo = None
+        try:
+            p = board.piece_at(from_sq)
+            if p is not None and p.piece_type == chess.PAWN:
+                to_rank = chess.square_rank(to_sq)
+                if (p.color == chess.WHITE and to_rank == 7) or (p.color == chess.BLACK and to_rank == 0):
+                    promo = chess.QUEEN
+        except Exception:
+            promo = None
+
+        mv = chess.Move(from_sq, to_sq, promotion=promo)
+        if mv not in board.legal_moves:
+            self.selected_square = None
+            return
+
+        # Start or continue an analysis branch.
+        if not self._review_analysis_active:
+            self._review_analysis_active = True
+            self._review_analysis_base_index = int(self.review_index)
+            self._review_variations[int(self.review_index)] = []
+        try:
+            san = board.san(mv)
+        except Exception:
+            san = mv.uci()
+
+        fen_before = fen
+        try:
+            board.push(mv)
+        except Exception:
+            self.selected_square = None
+            return
+
+        new_fen = board.fen()
+        self._review_analysis_fen = new_fen
+        try:
+            self._review_variations[int(self._review_analysis_base_index)].append(str(san))
+        except Exception:
+            pass
+
+        # Update UI to the analysis position.
+        try:
+            self.last_move = [str(mv.uci())]
+        except Exception:
+            self.last_move = []
+        self._load_fen_into_ui(new_fen)
+        self.request_eval()
+        self.request_review_pv()
+
+        # Sound feedback for analysis moves.
+        try:
+            self._play_sound_for_move_from_fen(fen_before, mv)
+        except Exception:
+            pass
+
+        # Best-move arrow from mainline no longer applies.
+        self.review_best_move_uci = ''
+        self.review_arrow = None
+
+        self.selected_square = None
 
     def _ensure_layout(self, force: bool = False) -> None:
         """Ensure the board layout matches the current mode.
@@ -1933,12 +4144,30 @@ class Engine:
         except Exception:
             return
 
-        key = (bool(self.review_active), int(win_w), int(win_h), str(self.board_style), bool(self.show_numbers))
+        key = (bool(self.review_active), int(win_w), int(win_h), str(self.board_style), bool(self.show_numbers), float(getattr(self, '_board_user_scale', 1.0)))
         if not force and self._layout_cache_key == key:
             return
         self._layout_cache_key = key
 
         if not self.review_active:
+            # Normal play layout (reserve space for clocks + labels).
+            try:
+                new_size, new_offset, show_nums, base = self._compute_normal_layout(int(win_w), int(win_h))
+            except Exception:
+                return
+
+            self.show_numbers = bool(show_nums)
+            self._board_base_size = int(base)
+
+            if int(new_size) != int(self.size):
+                self.size = int(new_size)
+                try:
+                    self.board_background = pg.image.load('data/img/boards/' + self.board_style).convert()
+                    self.board_background = pg.transform.smoothscale(self.board_background, (self.size * 8, self.size * 8))
+                except Exception:
+                    pass
+
+            self.offset = [float(new_offset[0]), float(new_offset[1])]
             return
 
         # Reserve space for the review panel.
@@ -1966,29 +4195,9 @@ class Engine:
         ]
 
     def _restore_normal_layout(self) -> None:
-        """Restore the default (non-review) centered board layout."""
-        try:
-            win_w, win_h = self.screen.get_size()
-        except Exception:
-            return
-
+        """Restore the default (non-review) board layout."""
         self._layout_cache_key = None
-        try:
-            new_size = int((win_h - 200) / 8)
-        except Exception:
-            new_size = int(self.size)
-        if new_size <= 1:
-            new_size = 1
-        self.size = int(new_size)
-        try:
-            self.board_background = pg.image.load('data/img/boards/' + self.board_style).convert()
-            self.board_background = pg.transform.smoothscale(self.board_background, (self.size * 8, self.size * 8))
-        except Exception:
-            pass
-        self.offset = [
-            pg.display.get_window_size()[0] / 2 - 4 * self.size,
-            pg.display.get_window_size()[1] / 2 - 4 * self.size,
-        ]
+        self._ensure_layout(force=True)
 
     def _play_review_navigation_sound(self, prev_index: int, new_index: int) -> None:
         if not self.sound_enabled:
@@ -2033,6 +4242,17 @@ class Engine:
             self._play_review_navigation_sound(prev, new_idx)
         self.review_index = new_idx
 
+        # Leaving analysis branch when navigating.
+        self._review_analysis_active = False
+        self._review_analysis_base_index = int(self.review_index)
+        self._review_analysis_fen = ''
+        try:
+            with self._review_pv_lock:
+                self.review_pv_lines = []
+                self.review_pv_pending = False
+        except Exception:
+            pass
+
         # Highlight last move like in the main game.
         try:
             if self.review_index <= 0:
@@ -2045,8 +4265,8 @@ class Engine:
         self._load_fen_into_ui(self.review_fens[self.review_index])
         # Update eval bar for the currently viewed review position.
         self.request_eval()
-        # Update eval bar for the currently viewed review position.
-        self.request_eval()
+        # Update PV lines for the currently viewed review position.
+        self.request_review_pv()
         if self.review_show_best_move:
             self._request_review_best()
         else:
@@ -2098,8 +4318,12 @@ class Engine:
                 # Drop the last SAN move (the one "before the brackets")
                 if out:
                     out.pop()
+                # Prefer the bracketed continuation.
                 cls._pgn_collect_san_prefer_variations(item, out)
-                continue
+                # CRITICAL: do not also keep consuming tokens after the variation at this
+                # nesting level. Mixing both lines often makes later SAN illegal (e.g. Nfxd4
+                # being applied to the wrong position).
+                return
 
             tok = str(item)
             if cls._is_pgn_result(tok):
@@ -2223,12 +4447,25 @@ class Engine:
         self.review_accuracy_overall = None
         self.review_analysis_progress = 0.0
 
+        # Reset interactive analysis state.
+        self._review_analysis_active = False
+        self._review_analysis_base_index = 0
+        self._review_analysis_fen = ''
+        self._review_variations = {}
+        try:
+            with self._review_pv_lock:
+                self.review_pv_lines = []
+                self.review_pv_pending = False
+        except Exception:
+            pass
+
         self.last_move = []
         self._ensure_layout(force=True)
 
         self._load_fen_into_ui(self.review_fens[self.review_index])
         if self.review_show_best_move:
             self._request_review_best()
+        self.request_review_pv()
         # Run analysis on the parsed move list (not python-chess PGN mainline)
         self._start_review_analysis_thread(start_board, moves)
 
@@ -2287,6 +4524,16 @@ class Engine:
         self.review_analysis_progress = None
         self.review_move_scroll = 0
         self._review_move_hitboxes = []
+        self._review_analysis_active = False
+        self._review_analysis_base_index = 0
+        self._review_analysis_fen = ''
+        self._review_variations = {}
+        try:
+            with self._review_pv_lock:
+                self.review_pv_lines = []
+                self.review_pv_pending = False
+        except Exception:
+            pass
         self._restore_normal_layout()
         self.reset_game()
 
@@ -2323,7 +4570,9 @@ class Engine:
         self.update_legal_moves()
 
     def _request_review_best(self) -> None:
-        if self.stockfish_review is None or not self.review_active or not self.review_fens or not self.review_show_best_move:
+        if not self.review_active or not self.review_fens or not self.review_show_best_move:
+            return
+        if not self._ensure_review_engine():
             return
         fen = self.review_fens[self.review_index]
         try:
@@ -2374,7 +4623,7 @@ class Engine:
 
     def _start_review_analysis_thread(self, start_board: chess.Board, moves: list[chess.Move]) -> None:
         # Fire-and-forget analysis thread to compute ACPL for both sides.
-        if self.stockfish_review_analysis is None:
+        if not self._ensure_review_analysis_engine() or self.stockfish_review_analysis is None:
             self.review_analysis_progress = None
             return
 
@@ -2554,13 +4803,47 @@ class Engine:
         :param piece_selected:
         :return:
         """
+        premove_piece = self._premove_piece
+        premove_to = self._premove_to
+
         for piece in self.all_pieces:
-            if piece != piece_selected:
-                piece.draw(self.offset, self.screen, self.size, self.flipped)
+            if piece == piece_selected:
+                continue
+            # When a premove is queued, visually "snap" the premoved piece to its destination
+            # by skipping its normal draw at the original square.
+            if premove_piece is not None and premove_to is not None and piece == premove_piece:
+                continue
+            piece.draw(self.offset, self.screen, self.size, self.flipped)
 
         # Draw the piece last, if it is being clicked/dragged
         if piece_selected is not None:
             piece_selected.draw(self.offset, self.screen, self.size, False)
+
+        # Draw the next premove piece last at its destination square (visual only).
+        if premove_piece is not None and premove_to is not None:
+            try:
+                if premove_piece in self.all_pieces and not getattr(premove_piece, 'dead', False):
+                    # Ensure sprite image matches current size.
+                    try:
+                        premove_piece.size = int(self.size)
+                        if premove_piece.picture is not None and premove_piece.picture.get_size() != (self.size, self.size):
+                            premove_piece.picture = pg.image.load(
+                                "data/img/pieces/" + premove_piece.piece_set + "/" + premove_piece.colour[0] + premove_piece.piece.lower() + ".png"
+                            ).convert_alpha()
+                            premove_piece.picture = pg.transform.smoothscale(premove_piece.picture, (self.size, self.size))
+                    except Exception:
+                        pass
+
+                    r, c = int(premove_to[0]), int(premove_to[1])
+                    if not self.flipped:
+                        x = self.offset[0] + self.size * c
+                        y = self.offset[1] + self.size * r
+                    else:
+                        x = self.offset[0] + self.size * (-c + 7)
+                        y = self.offset[1] + self.size * (-r + 7)
+                    self.screen.blit(premove_piece.picture, (x, y))
+            except Exception:
+                pass
 
         self.draw_arrows()
 

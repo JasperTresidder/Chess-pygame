@@ -18,6 +18,9 @@ class Piece(sprite.Sprite):
         self.legal_directions = None
         self.checks = []
         self.legal_positions = []
+        # Populated by Engine.update_legal_moves() from python-chess.
+        # Contains (dx, dy) moves that are captures (including en-passant which can land on an empty square).
+        self.legal_captures = set()
         self.pin_lines = set()
         self.legal_directions = None
         self.clicked = False
@@ -33,19 +36,55 @@ class Piece(sprite.Sprite):
     def show_legal_moves(self, screen, offset, turn, flipped, board):
         """If piece is clicked show legal moves"""
 
-        for i in self.legal_positions:
-            if board[(self.position[0] + i[1])][(self.position[1] + i[0])] == ' ':
-                if -1 < (self.position[1] + i[0]) < 8 and -1 < (self.position[0] + i[1]) < 8 and turn == self.colour[0]:
-                    if not flipped:
-                        pg.draw.circle(screen, (0, 204, 204), ((self.position[1] + i[0])*self.size + offset[0] + self.size/2, (self.position[0] + i[1])*self.size + offset[1] + self.size/2), self.size/4)
-                    else:
-                        pg.draw.circle(screen, (0, 204, 204), ((-self.position[1]+7 - i[0])*self.size + offset[0] + self.size/2, (-self.position[0]+7 - i[1])*self.size + offset[1] + self.size/2), self.size/4)
+        # Chess.com-style move dots (smaller + grayer + semi-transparent).
+        # Use RGBA on an SRCALPHA surface so alpha blending works reliably.
+        dot_dark = (80, 80, 80, 140)
+        dot_light = (160, 160, 160, 140)
+        dot_radius = max(3, int(self.size * 0.14))
+        ring_radius = max(dot_radius + 6, int(self.size * 0.42))
+        ring_thickness = max(3, int(self.size * 0.09))
+
+        for dx, dy in self.legal_positions:
+            if turn != self.colour[0]:
+                continue
+
+            r = self.position[0] + dy
+            c = self.position[1] + dx
+            if not (-1 < r < 8 and -1 < c < 8):
+                continue
+
+            # Capture detection comes only from python-chess (needed for en-passant).
+            is_capture = (dx, dy) in self.legal_captures
+
+            if not flipped:
+                draw_r, draw_c = r, c
             else:
-                if -1 < (self.position[1] + i[0]) < 8 and -1 < (self.position[0] + i[1]) < 8 and turn == self.colour[0]:
-                    if not flipped:
-                        pg.draw.rect(screen, (237, 109, 100), ((self.position[1] + i[0])*self.size + offset[0] + self.size/6, (self.position[0] + i[1])*self.size + offset[1] + self.size/6, 2*self.size/3, 2*self.size/3), border_radius=int(self.size/8))
-                    else:
-                        pg.draw.rect(screen, (237, 109, 100), ((-self.position[1]+7 - i[0])*self.size + offset[0] + self.size/6, (-self.position[0]+7 - i[1])*self.size + offset[1] + self.size/6, 2*self.size/3, 2*self.size/3), border_radius=int(self.size/8))
+                draw_r, draw_c = -r + 7, -c + 7
+
+            if not is_capture:
+                dot_color = dot_dark if ((draw_r + draw_c + 1) % 2 == 0) else dot_light
+                dot_surf = pg.Surface((dot_radius * 2 + 2, dot_radius * 2 + 2), pg.SRCALPHA)
+                pg.draw.circle(dot_surf, dot_color, (dot_radius + 1, dot_radius + 1), dot_radius)
+                screen.blit(
+                    dot_surf,
+                    (
+                        draw_c * self.size + offset[0] + self.size / 2 - (dot_radius + 1),
+                        draw_r * self.size + offset[1] + self.size / 2 - (dot_radius + 1),
+                    ),
+                )
+            else:
+                ring_color = dot_dark if ((draw_r + draw_c + 1) % 2 == 0) else dot_light
+                ring_size = ring_radius * 2 + ring_thickness * 2 + 2
+                ring_surf = pg.Surface((ring_size, ring_size), pg.SRCALPHA)
+                center = (ring_size // 2, ring_size // 2)
+                pg.draw.circle(ring_surf, ring_color, center, ring_radius, width=ring_thickness)
+                screen.blit(
+                    ring_surf,
+                    (
+                        draw_c * self.size + offset[0] + self.size / 2 - ring_size / 2,
+                        draw_r * self.size + offset[1] + self.size / 2 - ring_size / 2,
+                    ),
+                )
 
     def update_legal_moves(self, board, eps=None, captures=False):
         """Refresh legal moves"""
