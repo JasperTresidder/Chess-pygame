@@ -1,0 +1,63 @@
+<h3>Pygame Chess — play, analyze, and review your games</h3>
+
+<p>
+This is a full chess game built with <strong>Pygame</strong>, featuring multiple ways to play and a set of tools to help you learn from your games.
+Play <strong>Player vs AI (Stockfish)</strong>, <strong>Player vs Player</strong>, or <strong>AI vs AI</strong>, then jump into <strong>Review</strong> and <strong>Analysis</strong> modes to explore positions, engine lines, and your own variations.
+</p>
+
+<h4>Key features</h4>
+<ul>
+	<li><strong>All standard chess rules</strong> (legal moves, castling, en passant, promotion, check/checkmate, etc.).</li>
+	<li><strong>Stockfish AI</strong> with configurable strength (great for practice).</li>
+	<li><strong>Chess clock</strong> with increments + clear on-board clock display.</li>
+	<li><strong>Fast move browsing</strong>: use Left/Right to step through moves quickly (holding the keys scrubs through positions).</li>
+	<li><strong>Clickable move list</strong> with current-move highlight (jump to any position instantly).</li>
+	<li><strong>Review mode</strong>: step through a finished game and explore engine suggestions + top lines (MultiPV).</li>
+	<li><strong>Variations</strong>: add your own lines during review/analysis and navigate them easily.</li>
+	<li><strong>Analysis mode</strong>: freely explore a position without UI freezing (engine work runs asynchronously).</li>
+	<li><strong>Save / load analysis</strong> (JSON) so you can return to your work later.</li>
+	<li><strong>PGN saving</strong> for played games.</li>
+	<li><strong>Pre-moves</strong> (useful vs AI for faster play).</li>
+	<li><strong>Resizable board</strong> and a clean 60/40 layout in review/analysis so panels never overlap the board.</li>
+	<li><strong>Settings</strong> menu including a <strong>sound on/off</strong> toggle.</li>
+</ul>
+
+<h4>Download / install</h4>
+<p><strong>Size:</strong> ~90MB</p>
+<p><strong>Free for a limited time.</strong></p>
+<p>
+Tip: If you run into launch issues, installing and running through the <strong>itch.io desktop app</strong> tends to be the smoothest experience.
+</p>
+
+<p>
+If you’d like to install / build from GitHub instead:
+<br>
+<a href="https://github.com/JasperTresidder/Chess-pygame">https://github.com/JasperTresidder/Chess-pygame</a>
+</p>
+
+<h4>Update notes</h4>
+<ul>
+	<li>(27/09/2023) Added a sound on/off toggle in settings.</li>
+	<li>(21/12/2025) Major update: game review + analysis tools, pre-moves, board resizing, chess clock, and fast move browsing.</li>
+</ul>
+
+<h4>Video</h4>
+<div class="video-container">
+	<iframe width="500" height="281" src="//www.youtube.com/embed/7xpih7M6qJs" frameborder="0" allowfullscreen=""></iframe>
+</div>
+
+<h4>Suggested screenshots (ideas)</h4>
+<p>
+If you want the page to look feature-rich instantly, these are the best screenshots to add (with captions):
+</p>
+<ul>
+	<li><strong>Normal play</strong>: board + clocks + move list (caption: “Clickable move list + chess clock”).</li>
+	<li><strong>Review mode</strong>: right-side panel showing engine top lines + your variation under a move (caption: “Review with MultiPV + variations”).</li>
+	<li><strong>Analysis mode</strong>: exploring a position with saved-analysis controls (caption: “Async analysis — explore without freezing”).</li>
+	<li><strong>Board resize</strong>: a screenshot showing the resized board + clean layout (caption: “Resizable board + UI never overlaps”).</li>
+	<li><strong>Settings menu</strong>: showing sound toggle + other options (caption: “Quick settings & sound toggle”).</li>
+</ul>
+
+<p><br></p>
+<p><img src="https://img.itch.zone/aW1nLzEzMDY5ODk5LnBuZw==/original/hP8r3Q.png"><br></p>
+<figure><img src="https://img.itch.zone/aW1nLzEzMDY5OTAwLnBuZw==/original/FXgaeW.png"><br></figure>

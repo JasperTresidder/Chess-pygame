@@ -343,8 +343,28 @@ class StartMenu(pm.menu.Menu):
         except Exception:
             pc = 'w'
         pc = 'b' if pc.startswith('b') else 'w'
-        if len(lines) >= 10:
-            lines[9] = pc + '\n'
+
+        # Backward compatibility: old files stored player colour at index 9.
+        # New format stores review analysis depth at index 9 and player colour at index 10.
+        try:
+            if len(lines) >= 10 and str(lines[9]).strip().lower() in ('w', 'b'):
+                # Migrate: keep the old colour, insert default depth.
+                old_pc = str(lines[9]).strip().lower()
+                lines[9] = '10\n'
+                if len(lines) >= 11:
+                    lines[10] = old_pc + '\n'
+                else:
+                    lines.append(old_pc + '\n')
+        except Exception:
+            pass
+
+        # Ensure review-depth line exists.
+        while len(lines) < 10:
+            lines.append('10\n')
+
+        # Write player colour as the final line.
+        if len(lines) >= 11:
+            lines[10] = pc + '\n'
         else:
             lines.append(pc + '\n')
 

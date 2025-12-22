@@ -79,6 +79,12 @@ class SettingsMenu(pm.menu.Menu):
         self.screen = surface
         self.o_size = self.screen.get_size()
         self.parent = parent
+
+        # Autosave: persist settings.txt whenever a widget changes.
+        # Debounced to avoid writing on every keystroke.
+        self._autosave_lock = threading.Lock()
+        self._autosave_timer: threading.Timer | None = None
+        self._autosave_enabled = False
         custom_controller = Controller()
         custom_controller.apply = self.btn_apply
 
@@ -177,6 +183,9 @@ class SettingsMenu(pm.menu.Menu):
         if len(lines) < 9:
             # Default time control: minutes|incrementSeconds
             lines = lines + ['5|0\n']
+        if len(lines) < 10:
+            # Default review analysis depth (used for Game Review re-analysis)
+            lines = lines + ['10\n']
 
         # Backward-compatible Elo load:
         # - Old format stored a dropselect index 0..20 for values 600 + 120*i.
@@ -276,6 +285,39 @@ class SettingsMenu(pm.menu.Menu):
         left.pack(self.label_tc)
         left.pack(self.time_control)
 
+        # Default Game Review analysis depth (Stockfish set_depth) for ACPL/move labels.
+        try:
+            raw_rd = str(lines[9]).strip().lower()
+            if raw_rd in ('w', 'b'):
+                # Old files stored player colour here.
+                saved_rd = int(getattr(self.parent, 'review_analysis_depth', 10))
+            else:
+                saved_rd = int(raw_rd)
+        except Exception:
+            saved_rd = int(getattr(self.parent, 'review_analysis_depth', 10))
+        saved_rd = max(6, min(20, int(saved_rd)))
+        review_depth_values = [(f"d{d}", d) for d in range(6, 22, 2)]
+        try:
+            rd_list = [int(x[1]) for x in review_depth_values]
+            default_rd_index = min(range(len(rd_list)), key=lambda i: abs(rd_list[i] - int(saved_rd)))
+        except Exception:
+            default_rd_index = 2
+        self.label_review_depth = add_label('Review Analysis Depth', 22)
+        self.review_depth = self.add.dropselect(
+            '',
+            review_depth_values,
+            int(default_rd_index),
+            selection_box_width=select_w,
+            selection_box_margin=(0, 0),
+            selection_option_font_size=20,
+            placeholder='Select depth',
+            selection_box_height=6,
+            cursor=11,
+        )
+        self.review_depth.set_controller(custom_controller)
+        left.pack(self.label_review_depth)
+        left.pack(self.review_depth)
+
         # Appearance + Engine column
         right.pack(add_label('Appearance', 26), margin=(0, 6))
         self.label_pieces = add_label('Pieces', 22)
@@ -322,7 +364,139 @@ class SettingsMenu(pm.menu.Menu):
         right.pack(self.perft_btn)
 
 
+        # Enable autosave once widgets are fully constructed.
+        self._autosave_enabled = True
+
+        # Hook autosave callbacks for all settings widgets.
+        for w in (
+            self.mode,
+            self.movement,
+            self.flip,
+            self.sounds,
+            self.eval_bar,
+            self.time_control,
+            self.review_depth,
+            self.piece,
+            self.board,
+            self.strength,
+        ):
+            self._hook_widget_autosave(w)
+
+
         self.resized = False
+
+    def _hook_widget_autosave(self, widget) -> None:
+        """Best-effort hook for pygame-menu widgets across versions."""
+        try:
+            widget.set_onchange(lambda *_a, **_k: self._request_autosave())
+            return
+        except Exception:
+            pass
+        try:
+            widget.onchange = lambda *_a, **_k: self._request_autosave()
+        except Exception:
+            pass
+
+    def _cancel_autosave_timer(self) -> None:
+        with self._autosave_lock:
+            t = self._autosave_timer
+            self._autosave_timer = None
+        if t is not None:
+            try:
+                t.cancel()
+            except Exception:
+                pass
+
+    def _request_autosave(self) -> None:
+        if not bool(getattr(self, '_autosave_enabled', False)):
+            return
+
+        # Debounce writes: schedule one save shortly after the last change.
+        def _do_save():
+            try:
+                self._persist_settings_to_file()
+            except Exception:
+                pass
+
+        with self._autosave_lock:
+            if self._autosave_timer is not None:
+                try:
+                    self._autosave_timer.cancel()
+                except Exception:
+                    pass
+            t = threading.Timer(0.25, _do_save)
+            t.daemon = True
+            self._autosave_timer = t
+            t.start()
+
+    def _settings_file_lines(self) -> list[str]:
+        # Match the same format used by confirm().
+        lines: list[str] = []
+        try:
+            lines.append(str(self.mode.get_index()) + '\n')
+        except Exception:
+            lines.append('0\n')
+        try:
+            lines.append(str(self.piece.get_index()) + '\n')
+        except Exception:
+            lines.append('0\n')
+        try:
+            lines.append(str(self.board.get_index()) + '\n')
+        except Exception:
+            lines.append('0\n')
+
+        # Elo: persist the value (not index).
+        try:
+            elo_val = int(self.strength.get_value()[0][1])
+        except Exception:
+            elo_val = 800
+        lines.append(str(int(elo_val)) + '\n')
+
+        try:
+            lines.append(str(int(self.flip.get_value())) + '\n')
+        except Exception:
+            lines.append('0\n')
+        try:
+            lines.append(str(int(self.sounds.get_value())) + '\n')
+        except Exception:
+            lines.append('1\n')
+        try:
+            lines.append(str(self.movement.get_index()) + '\n')
+        except Exception:
+            lines.append('0\n')
+        try:
+            lines.append(str(int(self.eval_bar.get_value())) + '\n')
+        except Exception:
+            lines.append('1\n')
+
+        try:
+            tc = str(self.time_control.get_value()).strip()
+            lines.append((tc if tc else '5|0') + '\n')
+        except Exception:
+            lines.append('5|0\n')
+
+        try:
+            rd = int(self.review_depth.get_value()[0][1])
+        except Exception:
+            rd = 10
+        rd = max(6, min(20, int(rd)))
+        lines.append(str(int(rd)) + '\n')
+
+        # Preserve player colour (set in Start menu for PvAI).
+        try:
+            pc = str(getattr(self.parent, 'player_colour', 'w') or 'w').strip().lower()
+        except Exception:
+            pc = 'w'
+        lines.append(('b' if pc.startswith('b') else 'w') + '\n')
+        return lines
+
+    def _persist_settings_to_file(self) -> None:
+        try:
+            os.makedirs('data/settings', exist_ok=True)
+        except Exception:
+            pass
+        with open('data/settings/settings.txt', 'w') as file:
+            file.writelines(self._settings_file_lines())
 
     def run(self):
         self.enable()
@@ -336,6 +510,9 @@ class SettingsMenu(pm.menu.Menu):
             self.o_size = self.screen.get_size()
 
     def confirm(self):
+        # Flush any pending autosave so the latest keystrokes are persisted.
+        self._cancel_autosave_timer()
+
         chosen = self.piece.get_value()[0][1]
         self.parent.change_pieces(chosen)
         self.parent.change_mode(self.mode.get_value()[0][1])
@@ -349,30 +526,20 @@ class SettingsMenu(pm.menu.Menu):
             self.parent.set_time_control(str(self.time_control.get_value()))
         except Exception:
             pass
-        with open('data/settings/settings.txt', 'w') as file:
-            file.writelines(str(self.mode.get_index())+'\n')
-            file.writelines(str(self.piece.get_index())+'\n')
-            file.writelines(str(self.board.get_index())+'\n')
-            # Store the Elo value (not the dropselect index) to avoid future preset/index mismatch.
+        try:
+            rd_val = int(self.review_depth.get_value()[0][1])
+            rd_val = max(6, min(20, int(rd_val)))
+            self.parent.review_analysis_depth_default = int(rd_val)
+            self.parent.review_analysis_depth = int(rd_val)
+        except Exception:
             try:
-                elo_val = int(self.strength.get_value()[0][1])
+                self.parent.review_analysis_depth = int(getattr(self.parent, 'review_analysis_depth', 10))
             except Exception:
-                elo_val = 800
-            file.writelines(str(int(elo_val)) + '\n')
-            file.writelines(str(int(self.flip.get_value()))+'\n')
-            file.writelines(str(int(self.sounds.get_value()))+'\n')
-            file.writelines(str(self.movement.get_index())+'\n')
-            file.writelines(str(int(self.eval_bar.get_value()))+'\n')
-            try:
-                file.writelines(str(self.time_control.get_value()).strip() + '\n')
-            except Exception:
-                file.writelines('5|0\n')
-            # Preserve player colour (set in Start menu for PvAI).
-            try:
-                pc = str(getattr(self.parent, 'player_colour', 'w') or 'w').strip().lower()
-            except Exception:
-                pc = 'w'
-            file.writelines(('b' if pc.startswith('b') else 'w') + '\n')
+                self.parent.review_analysis_depth = 10
+        try:
+            self._persist_settings_to_file()
+        except Exception:
+            pass
         self.mode.get_index()
         self.exit_menu()
 
