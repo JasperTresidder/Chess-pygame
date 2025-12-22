@@ -176,6 +176,26 @@ class StartMenu(pm.menu.Menu):
         self.start_btn = self.add.button('Start', self._start, font_background_color=(0, 200, 0), font_color=(0, 0, 0), cursor=11)
         self.start_btn.set_controller(custom_controller)
 
+        # Extra entry points
+        self.add.vertical_margin(8)
+        self.review_btn = self.add.button(
+            'Game Review',
+            self._open_game_review,
+            font_background_color=(100, 100, 100),
+            font_color=(0, 0, 0),
+            cursor=11,
+        )
+        self.review_btn.set_controller(custom_controller)
+
+        self.analysis_btn = self.add.button(
+            'Analysis Mode',
+            self._start_analysis_mode,
+            font_background_color=(100, 100, 100),
+            font_color=(0, 0, 0),
+            cursor=11,
+        )
+        self.analysis_btn.set_controller(custom_controller)
+
     def _on_preset_change(self, selected, value) -> None:
         """Keep the min|inc input synced when the user picks minutes."""
         mins_s = ''
@@ -242,6 +262,36 @@ class StartMenu(pm.menu.Menu):
     def run(self):
         self.enable()
         self.mainloop(self.screen, fps_limit=120)
+
+    def _open_game_review(self, **kwargs):
+        # Open the existing review-games menu.
+        try:
+            from src.engine.settings import GameReviewMenu
+            review_menu = GameReviewMenu(
+                title='Game Review',
+                width=self.screen.get_width(),
+                height=self.screen.get_height(),
+                surface=self.screen,
+                parent=self,
+                engine=self.parent,
+                theme=pm.themes.THEME_DARK,
+            )
+            self.disable()
+            review_menu.run()
+        except Exception:
+            # Never crash the start menu.
+            try:
+                self.enable()
+            except Exception:
+                pass
+
+    def _start_analysis_mode(self, **kwargs):
+        try:
+            if hasattr(self.parent, 'start_analysis_new'):
+                self.parent.start_analysis_new()
+                self.disable()
+        except Exception:
+            pass
 
     @staticmethod
     def _mode_to_settings_index(mode: str) -> int:

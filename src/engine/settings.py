@@ -26,6 +26,13 @@ def _make_settings_theme(base: pm.themes.Theme | None = None) -> pm.themes.Theme
         theme = pm.themes.THEME_DARK
 
     # Typography & spacing (compact, so everything fits without scrolling).
+    # Use a common font for readability.
+    try:
+        font_arial = getattr(getattr(pm, 'font', None), 'FONT_ARIAL', None)
+    except Exception:
+        font_arial = None
+    _set_theme_attr(theme, 'title_font', font_arial or 'arial')
+    _set_theme_attr(theme, 'widget_font', font_arial or 'arial')
     _set_theme_attr(theme, 'title_font_size', 54)
     _set_theme_attr(theme, 'widget_font_size', 22)
     _set_theme_attr(theme, 'widget_margin', (0, 6))
@@ -111,10 +118,14 @@ class SettingsMenu(pm.menu.Menu):
         # Back should also persist changes (user expectation: leaving settings saves).
         self.back = add_action('Back', self.confirm, (200, 0, 0))
         view = add_action('View Controls', self.view_controls, (100, 100, 100))
+        new_game = add_action('New Game', self.new_game, (100, 100, 100))
         review = add_action('Review Games', self.view_games, (100, 100, 100))
+        analysis = add_action('Analysis Mode', self.enter_analysis_mode, (100, 100, 100))
         actions.pack(self.back)
         actions.pack(view, margin=(14, 0))
+        actions.pack(new_game, margin=(14, 0))
         actions.pack(review, margin=(14, 0))
+        actions.pack(analysis, margin=(14, 0))
         self.pieces = [
             ('Alila', 'alila'),
             ('Alpha', 'alpha'),
@@ -364,6 +375,68 @@ class SettingsMenu(pm.menu.Menu):
             file.writelines(('b' if pc.startswith('b') else 'w') + '\n')
         self.mode.get_index()
         self.exit_menu()
+
+    def enter_analysis_mode(self, **kwargs):
+        """Apply settings and enter analysis mode (new analysis)."""
+        was_active = False
+        try:
+            was_active = bool(getattr(self.parent, 'analysis_active', False))
+        except Exception:
+            was_active = False
+
+        # Save/apply settings and close the menu.
+        try:
+            self.confirm()
+        except Exception:
+            try:
+                self.exit_menu()
+            except Exception:
+                pass
+
+        # If we're already in analysis mode, don't restart the line.
+        if was_active:
+            return
+        try:
+            self.parent.start_analysis_new()
+        except Exception:
+            pass
+
+    def new_game(self, **kwargs):
+        """Apply settings and return to the Start menu to begin a new game."""
+        # Save/apply settings and close the menu.
+        try:
+            self.confirm()
+        except Exception:
+            try:
+                self.exit_menu()
+            except Exception:
+                pass
+
+        # Ensure we leave review/analysis cleanly (without triggering their own menu flows).
+        try:
+            if bool(getattr(self.parent, 'review_active', False)):
+                self.parent.exit_review(return_to_start_menu=False)
+        except Exception:
+            pass
+        try:
+            if bool(getattr(self.parent, 'analysis_active', False)):
+                self.parent.exit_analysis(return_to_start_menu=False)
+        except Exception:
+            pass
+
+        # Flip the start-menu flag and reset so the run-loop shows StartMenu next frame.
+        try:
+            self.parent._start_menu_shown = False
+        except Exception:
+            pass
+        try:
+            self.parent._restore_normal_layout()
+        except Exception:
+            pass
+        try:
+            self.parent.reset_game()
+        except Exception:
+            pass
 
     def view_controls(self, **kwargs):
         self.disable()

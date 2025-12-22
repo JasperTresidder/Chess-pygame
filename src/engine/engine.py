@@ -131,8 +131,31 @@ class Engine:
         self.review_accuracy_overall: float | None = None
         self.review_analysis_progress: float | None = None
         self.review_last_error: str = ''
+        # Opening database (book) info aligned with review plies.
+        self.review_opening_names: list[str] = []
         self.review_move_scroll: int = 0
         self._review_move_hitboxes: list[tuple[pg.Rect, int]] = []
+        self._review_pv_hitboxes: list[tuple[pg.Rect, dict, int]] = []  # (rect, pv_item, move_index)
+        self._review_variation_hitboxes: list[tuple[pg.Rect, int, int]] = []  # (rect, base_index, cursor_index)
+
+        # Analysis mode (free analysis with move annotations).
+        self.analysis_active: bool = False
+        self.analysis_path: str | None = None
+        self.analysis_name: str = ''
+        self.analysis_fens: list[str] = []
+        self.analysis_plies: list[chess.Move] = []
+        self.analysis_sans: list[str] = []
+        self.analysis_move_labels: list[str] = []
+        self.analysis_opening_names: list[str] = []
+        self.analysis_index: int = 0
+        self.analysis_move_scroll: int = 0
+        self.analysis_progress: float | None = None
+        self.analysis_last_error: str = ''
+        self.analysis_last_saved_path: str = ''
+        self._analysis_move_hitboxes: list[tuple[pg.Rect, int]] = []
+        self._analysis_pv_hitboxes: list[tuple[pg.Rect, dict, int]] = []
+        self._analysis_variation_hitboxes: list[tuple[pg.Rect, int, int]] = []
+        self._analysis_run_id: int = 0
         self._layout_cache_key = None
         self.game_just_ended = False
         self.engine = 'stockfish'
@@ -194,6 +217,12 @@ class Engine:
         # In-game action buttons
         self._undo_btn_rect: pg.Rect | None = None
         self._resign_btn_rect: pg.Rect | None = None
+        self._toggle_movelist_btn_rect: pg.Rect | None = None
+
+        # Normal-game move list (right side). Hidden via toggle button.
+        self.game_movelist_visible: bool = True
+        self._game_san_cache_n: int = -1
+        self._game_san_cache: list[str] = []
 
         # Serialize access to the main playing Stockfish instance.
         # (Eval/review use separate Stockfish processes.)
@@ -268,20 +297,39 @@ class Engine:
         self._review_pv_engine_lock = threading.Lock()  # protects stockfish_review_pv access
         self._review_pv_stop = threading.Event()
         self._review_pv_thread: threading.Thread | None = None
-        self.review_pv_lines: list[str] = []
+        # Published from PV worker thread; render reads snapshots.
+        # Each item: {rank:int, eval:{type:cp|mate,value:int}, moves:[san...], fens:[fen_after_each_ply...]}
+        self.review_pv_lines: list[dict] = []
         self.review_pv_pending: bool = False
+        # Render-thread cache to avoid flicker when lock is contended.
+        self._review_pv_render_cache: list[dict] = []
+        self._review_pv_render_pending: bool = False
 
         # Review-mode drag uses the same tx/ty + updates flag as the main game.
 
         self._review_analysis_active: bool = False
         self._review_analysis_base_index: int = 0
         self._review_analysis_fen: str = ''
+        self._review_analysis_cursor: int = 0  # 0=base position, 1..N=variation ply index
         self._review_variations: dict[int, list[str]] = {}
+        self._review_variation_fens: dict[int, list[str]] = {}
+        self._review_variation_ucis: dict[int, list[str]] = {}
+
+        # Openings database index (EPD -> {name,eco,...}). Loaded lazily.
+        self._openings_epd_index: dict[str, dict] | None = None
+        self._openings_lock = threading.Lock()
 
         self._review_queue: queue.Queue[tuple[str, int]] = queue.Queue(maxsize=1)
         self._review_lock = threading.Lock()
         self._review_stop = threading.Event()
         self._review_thread: threading.Thread | None = None
+
+        # Review analysis (ACPL/accuracy) runs in a background thread and uses a shared
+        # Stockfish instance. If we start multiple analyses (e.g. open multiple PGNs
+        # quickly), they can contend and slow the app. Use a run-id to cancel stale
+        # threads and a lock to serialize engine access.
+        self._review_analysis_run_id: int = 0
+        self._review_analysis_engine_lock = threading.Lock()
 
         self._eval_queue: queue.Queue[str] = queue.Queue(maxsize=1)
         self._eval_stop = threading.Event()
@@ -349,9 +397,10 @@ class Engine:
 
         self.size = int((pg.display.get_window_size()[1] - 200) / 8)
         self.default_size = int(pg.display.get_window_size()[1] - 200 / 8)
-        self.font = pg.font.SysFont('segoescript', 30)
-        self.eval_font = pg.font.SysFont('segoescript', 18)
-        self._clock_font = pg.font.SysFont('segoescript', 24)
+        # Use a common font to avoid missing glyphs/odd sizing across systems.
+        self.font = pg.font.SysFont('arial', 30)
+        self.eval_font = pg.font.SysFont('arial', 18)
+        self._clock_font = pg.font.SysFont('arial', 24)
         self.updates = False
         self.arrow_colour = (252, 177, 3)
         self.colours = [(118, 150, 86), (238, 238, 210)]
@@ -456,8 +505,13 @@ class Engine:
             try:
                 _, frm, to, piece = self._premove_queue[0]
                 self._premove_from = frm
-                self._premove_to = to
                 self._premove_piece = piece
+                # Visually snap the premoved piece to its *final* queued destination
+                # (e.g. when chaining multiple premoves with the same piece).
+                try:
+                    self._premove_to = self._virtual_position_for_piece(piece)
+                except Exception:
+                    self._premove_to = to
             except Exception:
                 self._premove_from = None
                 self._premove_to = None
@@ -468,18 +522,92 @@ class Engine:
             self._premove_piece = None
 
     def _virtual_position_for_piece(self, piece: Piece) -> tuple[int, int]:
-        """Return the piece position after applying queued premoves (virtual board)."""
+        """Return the piece position after applying queued premoves (virtual board).
+
+        Includes special handling for castling premoves (moves the rook too).
+        """
+
+        def castle_rook_squares(frm: tuple[int, int], to: tuple[int, int]) -> tuple[tuple[int, int], tuple[int, int]] | None:
+            try:
+                fr, fc = int(frm[0]), int(frm[1])
+                tr, tc = int(to[0]), int(to[1])
+            except Exception:
+                return None
+            if fr != tr:
+                return None
+            if fc != 4:
+                return None
+            if abs(tc - fc) != 2:
+                return None
+            # Kingside: e->g (rook h->f). Queenside: e->c (rook a->d)
+            if tc == 6:
+                return (fr, 7), (fr, 5)
+            if tc == 2:
+                return (fr, 0), (fr, 3)
+            return None
+
         try:
-            pos = (int(piece.position[0]), int(piece.position[1]))
+            base = (int(piece.position[0]), int(piece.position[1]))
         except Exception:
-            pos = (0, 0)
+            base = (0, 0)
+
+        # Simulate the premove queue on a virtual occupancy map.
+        pos_by_piece: dict[Piece, tuple[int, int]] = {}
+        sq_to_piece: dict[tuple[int, int], Piece] = {}
         try:
-            for _, _frm, to, p in self._premove_queue:
-                if p == piece:
-                    pos = (int(to[0]), int(to[1]))
+            for p in getattr(self, 'all_pieces', []) or []:
+                try:
+                    if p is None or getattr(p, 'dead', False):
+                        continue
+                    pr, pc = int(p.position[0]), int(p.position[1])
+                    pos_by_piece[p] = (pr, pc)
+                    sq_to_piece[(pr, pc)] = p
+                except Exception:
+                    continue
+
+            for _uci, frm, to, p in getattr(self, '_premove_queue', []) or []:
+                if p is None or p not in pos_by_piece:
+                    continue
+                frm_sq = (int(frm[0]), int(frm[1]))
+                to_sq = (int(to[0]), int(to[1]))
+
+                old_sq = pos_by_piece.get(p)
+                if old_sq is not None and sq_to_piece.get(old_sq) == p:
+                    sq_to_piece.pop(old_sq, None)
+
+                victim = sq_to_piece.get(to_sq)
+                if victim is not None and victim != p:
+                    pos_by_piece.pop(victim, None)
+                    sq_to_piece.pop(to_sq, None)
+
+                pos_by_piece[p] = to_sq
+                sq_to_piece[to_sq] = p
+
+                # Castling premove: also move rook.
+                try:
+                    if str(getattr(p, 'piece', '')).lower() == 'k':
+                        rook_sqs = castle_rook_squares(frm_sq, to_sq)
+                        if rook_sqs is not None:
+                            rook_from, rook_to = rook_sqs
+                            rook_piece = sq_to_piece.get(rook_from)
+                            if (
+                                rook_piece is not None
+                                and str(getattr(rook_piece, 'piece', '')).lower() == 'r'
+                                and getattr(rook_piece, 'colour', '')[:1] == getattr(p, 'colour', '')[:1]
+                            ):
+                                sq_to_piece.pop(rook_from, None)
+                                victim2 = sq_to_piece.get(rook_to)
+                                if victim2 is not None and victim2 != rook_piece:
+                                    pos_by_piece.pop(victim2, None)
+                                    sq_to_piece.pop(rook_to, None)
+                                pos_by_piece[rook_piece] = rook_to
+                                sq_to_piece[rook_to] = rook_piece
+                except Exception:
+                    pass
         except Exception:
-            pass
-        return pos
+            return base
+
+        return pos_by_piece.get(piece, base)
 
     def _build_virtual_player_piece_map(self) -> dict[tuple[int, int], Piece]:
         """Map virtual squares -> player's Piece objects (after applying queued premoves)."""
@@ -500,15 +628,66 @@ class Engine:
         except Exception:
             return {}
 
+        def castle_rook_squares(frm: tuple[int, int], to: tuple[int, int]) -> tuple[tuple[int, int], tuple[int, int]] | None:
+            try:
+                fr, fc = int(frm[0]), int(frm[1])
+                tr, tc = int(to[0]), int(to[1])
+            except Exception:
+                return None
+            if fr != tr:
+                return None
+            if fc != 4:
+                return None
+            if abs(tc - fc) != 2:
+                return None
+            if tc == 6:
+                return (fr, 7), (fr, 5)
+            if tc == 2:
+                return (fr, 0), (fr, 3)
+            return None
+
         try:
             for _uci, frm, to, p in self._premove_queue:
                 if getattr(p, 'colour', '')[:1] != side:
                     continue
+
+                frm_sq = (int(frm[0]), int(frm[1]))
+                to_sq = (int(to[0]), int(to[1]))
+
                 old = pos_by_piece.get(p)
                 if old is not None and sq_to_piece.get(old) == p:
                     sq_to_piece.pop(old, None)
-                pos_by_piece[p] = (int(to[0]), int(to[1]))
-                sq_to_piece[(int(to[0]), int(to[1]))] = p
+
+                victim = sq_to_piece.get(to_sq)
+                if victim is not None and victim != p:
+                    # Temporarily remove any piece that gets covered by a premove.
+                    sq_to_piece.pop(to_sq, None)
+                    pos_by_piece.pop(victim, None)
+
+                pos_by_piece[p] = to_sq
+                sq_to_piece[to_sq] = p
+
+                # Castling premove moves the rook too.
+                try:
+                    if str(getattr(p, 'piece', '')).lower() == 'k':
+                        rook_sqs = castle_rook_squares(frm_sq, to_sq)
+                        if rook_sqs is not None:
+                            rook_from, rook_to = rook_sqs
+                            rook_piece = sq_to_piece.get(rook_from)
+                            if (
+                                rook_piece is not None
+                                and str(getattr(rook_piece, 'piece', '')).lower() == 'r'
+                                and getattr(rook_piece, 'colour', '')[:1] == side
+                            ):
+                                sq_to_piece.pop(rook_from, None)
+                                victim2 = sq_to_piece.get(rook_to)
+                                if victim2 is not None and victim2 != rook_piece:
+                                    sq_to_piece.pop(rook_to, None)
+                                    pos_by_piece.pop(victim2, None)
+                                pos_by_piece[rook_piece] = rook_to
+                                sq_to_piece[rook_to] = rook_piece
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -549,6 +728,35 @@ class Engine:
                     if dx == 0 and dy == 0:
                         continue
                     add_square(from_row + dy, from_col + dx, cap=True)
+
+            # Allow premove castling (king moves two squares) when the king and rook
+            # are still on their starting squares. Full legality is enforced later
+            # when applying the premove using python-chess.
+            try:
+                side = getattr(piece, 'colour', '')[:1]
+                start_row = 7 if side == 'w' else 0
+                if int(from_row) == int(start_row) and int(from_col) == 4:
+                    # Kingside rook at h-file.
+                    rk = self.board[int(start_row)][7]
+                    if (
+                        rk != ' '
+                        and rk is not None
+                        and str(getattr(rk, 'piece', '')).lower() == 'r'
+                        and getattr(rk, 'colour', '')[:1] == side
+                    ):
+                        add_square(from_row, from_col + 2, cap=False)
+
+                    # Queenside rook at a-file.
+                    rq = self.board[int(start_row)][0]
+                    if (
+                        rq != ' '
+                        and rq is not None
+                        and str(getattr(rq, 'piece', '')).lower() == 'r'
+                        and getattr(rq, 'colour', '')[:1] == side
+                    ):
+                        add_square(from_row, from_col - 2, cap=False)
+            except Exception:
+                pass
             return positions, captures
 
         if kind == 'p':
@@ -761,7 +969,7 @@ class Engine:
         self._clock_last_ts = time.time()
 
     def _draw_clocks(self) -> None:
-        if self.review_active:
+        if self.review_active or self.analysis_active:
             return
         try:
             font = self._clock_font or self.font
@@ -1025,6 +1233,7 @@ class Engine:
 
                 # Compute a move.
                 move = None
+                t0 = time.time()
                 try:
                     with self._play_engine_lock:
                         try:
@@ -1034,6 +1243,26 @@ class Engine:
                         move = self.move_strength(self.ai_elo)
                 except Exception:
                     move = None
+                t_compute = max(0.0, time.time() - t0)
+
+                # Simulate human-like thinking time based on the game clock.
+                # This is separate from Stockfish's internal movetime so we don't
+                # accidentally make the engine stronger just by "thinking" longer.
+                try:
+                    delay_s = float(self._ai_delay_seconds_from_clock())
+                except Exception:
+                    delay_s = 0.0
+
+                # Enforce a hard cap on total wall-clock time per AI move.
+                # Total = engine compute time + delay.
+                try:
+                    delay_s = min(float(delay_s), max(0.0, 2.0 - float(t_compute)))
+                except Exception:
+                    delay_s = 0.0
+                if delay_s > 0:
+                    end_t = time.time() + delay_s
+                    while (not self._ai_stop.is_set()) and time.time() < end_t:
+                        time.sleep(0.02)
 
                 # Publish the result back to the main thread.
                 try:
@@ -1094,10 +1323,22 @@ class Engine:
         if not move:
             return
 
+        browsing = bool(getattr(self, '_game_browse_active', False))
+
         # If a stale result comes back after an undo/reset, ignore it.
+        # While browsing, compare against the saved *live* FEN instead of the browsed FEN.
         try:
             fen_for_result = str(getattr(self, '_ai_result_fen', '') or '')
-            if fen_for_result and fen_for_result != str(self._current_fen()):
+        except Exception:
+            fen_for_result = ''
+        try:
+            live_fen = str(self._current_fen())
+            if browsing:
+                live_fen = str(getattr(self, '_game_browse_saved_fen', '') or live_fen)
+        except Exception:
+            live_fen = ''
+        try:
+            if fen_for_result and live_fen and fen_for_result != live_fen:
                 self._ai_result = ''
                 self._ai_result_fen = ''
                 return
@@ -1113,7 +1354,27 @@ class Engine:
 
         self.ai_thinking = False
 
-        # Record AI move to PGN + apply it.
+        # If browsing, apply the AI move to the *live* position, not the browsed one.
+        # Preserve the user's current browsed view.
+        browse_index = None
+        browse_fen = ''
+        if browsing:
+            try:
+                browse_index = int(self._game_browse_index) if self._game_browse_index is not None else None
+            except Exception:
+                browse_index = None
+            try:
+                if browse_index is not None and 0 <= int(browse_index) < len(self.game_fens):
+                    browse_fen = str(self.game_fens[int(browse_index)])
+            except Exception:
+                browse_fen = ''
+            try:
+                if live_fen:
+                    self._load_fen_into_ui(str(live_fen))
+            except Exception:
+                pass
+
+        # Record AI move to PGN + apply it (to the currently-loaded live board).
         try:
             self.last_move.append(move)
         except Exception:
@@ -1125,8 +1386,28 @@ class Engine:
 
         self.engine_make_move(move)
 
-        # After AI moves, try to apply the queued premove.
+        # After AI moves, try to apply the queued premove (must happen on the live board).
         self._apply_premove_if_legal()
+
+        # Update browse-mode live-turn/FEN so clocks tick correctly while browsing.
+        if browsing:
+            try:
+                self._game_browse_saved_fen = str(self.game_fens[-1]) if self.game_fens else str(live_fen)
+            except Exception:
+                self._game_browse_saved_fen = str(live_fen)
+            try:
+                self._game_browse_live_turn = str(self.turn)
+            except Exception:
+                pass
+
+            # Restore the browsed view.
+            try:
+                if browse_fen:
+                    self._load_fen_into_ui(str(browse_fen))
+                if browse_index is not None:
+                    self._game_browse_index = int(browse_index)
+            except Exception:
+                pass
 
     def _save_pgn(self, path: str) -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -1293,18 +1574,208 @@ class Engine:
             mate_val = 0
         return f"M{mate_val}"
 
+    @staticmethod
+    def _epd_from_fen(fen: str) -> str:
+        """Return the EPD-like key used by the openings database (first 4 FEN fields)."""
+        try:
+            parts = str(fen or '').strip().split()
+        except Exception:
+            parts = []
+        if len(parts) < 4:
+            return ''
+        return ' '.join(parts[:4])
+
+    def _openings_index_path(self) -> str:
+        return os.path.join('lit', 'database', 'chess-openings', 'openings_epd.json')
+
+    def _ensure_openings_index(self) -> bool:
+        """Load openings EPD index into memory. Returns True on success."""
+        try:
+            with self._openings_lock:
+                if isinstance(self._openings_epd_index, dict) and self._openings_epd_index:
+                    return True
+        except Exception:
+            pass
+
+        path = self._openings_index_path()
+        try:
+            if os.path.exists(path):
+                import json
+                with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    with self._openings_lock:
+                        self._openings_epd_index = data
+                    return True
+        except Exception:
+            pass
+
+        # Fallback: if the json isn't present but pyarrow is installed, attempt to build it.
+        try:
+            parquet_path = os.path.join('lit', 'database', 'chess-openings', 'data', 'train-00000-of-00001.parquet')
+            if not os.path.exists(parquet_path):
+                return False
+            import pyarrow.parquet as pq
+            import json
+
+            table = pq.read_table(parquet_path, columns=['epd', 'name', 'eco', 'eco-volume'])
+            epd = table.column('epd').to_pylist()
+            name = table.column('name').to_pylist()
+            eco = table.column('eco').to_pylist()
+            vol = table.column('eco-volume').to_pylist()
+
+            out: dict[str, dict] = {}
+            for i in range(len(epd)):
+                k = str(epd[i] or '').strip()
+                if not k:
+                    continue
+                nm = str(name[i] or '').strip()
+                if not nm:
+                    continue
+                if k not in out:
+                    out[k] = {'name': nm, 'eco': str(eco[i] or '').strip(), 'eco_volume': str(vol[i] or '').strip()}
+
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, 'w', encoding='utf-8') as f:
+                    json.dump(out, f, ensure_ascii=False)
+            except Exception:
+                pass
+
+            with self._openings_lock:
+                self._openings_epd_index = out
+            return True
+        except Exception:
+            return False
+
+    def _opening_name_for_fen(self, fen: str) -> str:
+        if not self._ensure_openings_index():
+            return ''
+        k = self._epd_from_fen(fen)
+        if not k:
+            return ''
+        try:
+            with self._openings_lock:
+                d = (self._openings_epd_index or {}).get(k)
+        except Exception:
+            d = None
+        if not isinstance(d, dict):
+            return ''
+        try:
+            return str(d.get('name', '') or '')
+        except Exception:
+            return ''
+
+    def _compute_review_openings(self, start_board: chess.Board, moves: list[chess.Move]) -> list[str]:
+        """Return opening names per ply (after applying each move)."""
+        out: list[str] = []
+        try:
+            b = start_board.copy(stack=False)
+        except Exception:
+            b = chess.Board()
+        for mv in moves:
+            try:
+                b.push(mv)
+            except Exception:
+                out.append('')
+                continue
+            out.append(self._opening_name_for_fen(b.fen()))
+        return out
+
+    @staticmethod
+    def _review_cache_path(pgn_path: str) -> str:
+        return str(pgn_path) + '.analysis.json'
+
+    def _load_review_analysis_cache(self, pgn_path: str, moves: list[chess.Move]) -> bool:
+        """Load cached review analysis (labels/acpl/accuracy/opening names) if it matches this PGN."""
+        path = self._review_cache_path(pgn_path)
+        if not os.path.exists(path):
+            return False
+        try:
+            import json
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                data = json.load(f)
+        except Exception:
+            return False
+        if not isinstance(data, dict):
+            return False
+        try:
+            cached_uci = list(data.get('moves_uci', []))
+        except Exception:
+            cached_uci = []
+        cur_uci = []
+        try:
+            cur_uci = [str(m.uci()) for m in moves]
+        except Exception:
+            cur_uci = []
+        if cached_uci != cur_uci:
+            return False
+
+        try:
+            self.review_move_labels = list(data.get('move_labels', []))
+        except Exception:
+            self.review_move_labels = []
+        try:
+            self.review_opening_names = list(data.get('opening_names', []))
+        except Exception:
+            self.review_opening_names = []
+        try:
+            self.review_acpl_white = float(data.get('acpl_white')) if data.get('acpl_white') is not None else None
+            self.review_acpl_black = float(data.get('acpl_black')) if data.get('acpl_black') is not None else None
+            self.review_accuracy_white = float(data.get('acc_white')) if data.get('acc_white') is not None else None
+            self.review_accuracy_black = float(data.get('acc_black')) if data.get('acc_black') is not None else None
+            self.review_accuracy_overall = float(data.get('acc_overall')) if data.get('acc_overall') is not None else None
+        except Exception:
+            pass
+        self.review_analysis_progress = None
+        return True
+
+    def _save_review_analysis_cache(self, pgn_path: str, moves: list[chess.Move]) -> None:
+        """Persist review analysis results so re-opening the same PGN is instant."""
+        path = self._review_cache_path(pgn_path)
+        try:
+            import json
+            data = {
+                'version': 1,
+                'moves_uci': [str(m.uci()) for m in moves],
+                'move_labels': list(getattr(self, 'review_move_labels', []) or []),
+                'opening_names': list(getattr(self, 'review_opening_names', []) or []),
+                'acpl_white': self.review_acpl_white,
+                'acpl_black': self.review_acpl_black,
+                'acc_white': self.review_accuracy_white,
+                'acc_black': self.review_accuracy_black,
+                'acc_overall': self.review_accuracy_overall,
+            }
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False)
+        except Exception:
+            pass
+
     def _review_display_fen(self) -> str:
         if self._review_analysis_active:
+            # Prefer a structured analysis line if we have one.
+            try:
+                base = int(self._review_analysis_base_index)
+                cur = int(self._review_analysis_cursor)
+                # If we're browsing a PV line, use the PV list; otherwise use the user-saved variation.
+                if bool(getattr(self, '_review_pv_variation_active', False)) and int(getattr(self, '_review_pv_variation_base_index', -9999)) == base:
+                    vfens = list(getattr(self, '_review_pv_variation_fens', []) or [])
+                else:
+                    vfens = self._review_variation_fens.get(base, [])
+                if cur > 0 and 0 <= (cur - 1) < len(vfens):
+                    return str(vfens[cur - 1])
+            except Exception:
+                pass
             return self._review_analysis_fen or (self.review_fens[self.review_index] if self.review_fens else '')
         return self.review_fens[self.review_index] if self.review_fens else ''
 
     def request_review_pv(self) -> None:
         """Queue an async top-3-lines analysis for the current review position."""
-        if not self.review_active:
+        if not (self.review_active or getattr(self, 'analysis_active', False)):
             return
         if not self._ensure_review_pv_engine():
             return
-        fen = self._review_display_fen()
+        fen = self._review_display_fen() if self.review_active else self._analysis_display_fen()
         if not fen:
             return
         try:
@@ -1322,6 +1793,8 @@ class Engine:
     def _review_pv_worker(self) -> None:
         if self.stockfish_review_pv is None:
             return
+
+        PV_PLIES = 10  # show at least 5 full moves (10 plies)
 
         def eval_from_topmove(d: dict) -> dict:
             if not isinstance(d, dict):
@@ -1351,12 +1824,13 @@ class Engine:
 
             # If user navigated since this request, skip.
             try:
-                if fen != self._review_display_fen():
+                cur_fen = self._review_display_fen() if self.review_active else (self._analysis_display_fen() if getattr(self, 'analysis_active', False) else '')
+                if fen != cur_fen:
                     continue
             except Exception:
                 pass
 
-            lines_out: list[str] = []
+            lines_out: list[dict] = []
             try:
                 # Keep this lightweight so move navigation stays snappy.
                 # We show: eval + best move in SAN (no long PV continuation).
@@ -1367,31 +1841,115 @@ class Engine:
                         pass
                     try:
                         self.stockfish_review_pv.set_skill_level(20)
-                        self.stockfish_review_pv.set_depth(10)
+                        # Keep PV reasonably fast; we extend lines ourselves if needed.
+                        self.stockfish_review_pv.set_depth(8)
                     except Exception:
                         pass
 
                     self.stockfish_review_pv.set_fen_position(fen)
                     top = self.stockfish_review_pv.get_top_moves(3) or []
 
-                b0 = chess.Board(fen)
                 for i, d in enumerate(top[:3]):
-                    mv0 = d.get('Move') if isinstance(d, dict) else None
+                    if not isinstance(d, dict):
+                        continue
+                    mv0 = d.get('Move')
                     if not mv0:
                         continue
-                    score = self._format_eval_short(eval_from_topmove(d))
+
+                    eval_d = eval_from_topmove(d)
+                    # Prefer a PV continuation if the wrapper provides one.
+                    pv_raw = d.get('Line')
+                    if not pv_raw:
+                        pv_raw = d.get('PV')
+
+                    uci_seq: list[str] = []
+                    if isinstance(pv_raw, str) and pv_raw.strip():
+                        uci_seq = [p for p in pv_raw.strip().split() if p]
+                    elif isinstance(pv_raw, (list, tuple)):
+                        try:
+                            uci_seq = [str(x) for x in pv_raw if str(x)]
+                        except Exception:
+                            uci_seq = []
+
+                    if not uci_seq:
+                        uci_seq = [str(mv0)]
+
+                    # If the wrapper didn't provide a full PV, extend it by querying best moves
+                    # from the subsequent positions. This runs only in the PV worker thread.
                     try:
-                        m = chess.Move.from_uci(str(mv0))
-                        san0 = b0.san(m)
+                        if len(uci_seq) < PV_PLIES:
+                            b_ext = chess.Board(fen)
+                            # Push already-known moves first.
+                            for u in list(uci_seq):
+                                try:
+                                    b_ext.push(chess.Move.from_uci(str(u)))
+                                except Exception:
+                                    break
+                            # Extend line.
+                            while len(uci_seq) < PV_PLIES:
+                                try:
+                                    fen_k = b_ext.fen()
+                                except Exception:
+                                    break
+                                bm = None
+                                try:
+                                    with self._review_pv_engine_lock:
+                                        self.stockfish_review_pv.set_fen_position(fen_k)
+                                        bm = self.stockfish_review_pv.get_best_move()
+                                except Exception:
+                                    bm = None
+                                if not bm:
+                                    break
+                                try:
+                                    mv_k = chess.Move.from_uci(str(bm))
+                                except Exception:
+                                    break
+                                try:
+                                    b_ext.push(mv_k)
+                                except Exception:
+                                    break
+                                uci_seq.append(str(bm))
                     except Exception:
-                        san0 = str(mv0)
-                    lines_out.append(f"{i + 1}. {score}  {san0}")
+                        pass
+
+                    b = chess.Board(fen)
+                    san_moves: list[str] = []
+                    fen_after: list[str] = []
+                    for u in uci_seq[:PV_PLIES]:
+                        try:
+                            mv = chess.Move.from_uci(str(u))
+                        except Exception:
+                            break
+                        try:
+                            san = b.san(mv)
+                        except Exception:
+                            san = str(u)
+                        try:
+                            b.push(mv)
+                        except Exception:
+                            break
+                        san_moves.append(str(san))
+                        try:
+                            fen_after.append(str(b.fen()))
+                        except Exception:
+                            fen_after.append('')
+
+                    lines_out.append(
+                        {
+                            "rank": int(i + 1),
+                            "eval": eval_d,
+                            "moves": san_moves,
+                            "uci": [str(u) for u in uci_seq[: len(san_moves)]],
+                            "fens": fen_after,
+                        }
+                    )
             except Exception:
                 lines_out = []
 
             # Only publish if we're still on the same displayed position.
             try:
-                if fen != self._review_display_fen():
+                cur_fen = self._review_display_fen() if self.review_active else (self._analysis_display_fen() if getattr(self, 'analysis_active', False) else '')
+                if fen != cur_fen:
                     continue
             except Exception:
                 pass
@@ -1401,6 +1959,314 @@ class Engine:
                     self.review_pv_pending = False
             except Exception:
                 pass
+
+    @staticmethod
+    def _eval_side_for_rect(e: dict | None) -> str:
+        """Return 'w' if eval favors white, 'b' if favors black, else 'e'."""
+        if not isinstance(e, dict):
+            return 'e'
+        t = e.get('type')
+        try:
+            v = int(e.get('value', 0))
+        except Exception:
+            v = 0
+        if t == 'mate':
+            if v > 0:
+                return 'w'
+            if v < 0:
+                return 'b'
+            return 'e'
+        # cp
+        if v > 15:
+            return 'w'
+        if v < -15:
+            return 'b'
+        return 'e'
+
+    def _review_jump_to_fen(self, fen: str) -> None:
+        """Jump the review display to a specific FEN (analysis overlay)."""
+        if not self.review_active:
+            return
+        if not fen:
+            return
+        # Ensure analysis overlay is active so _review_display_fen() returns this FEN.
+        if not self._review_analysis_active:
+            self._review_analysis_active = True
+            self._review_analysis_base_index = int(self.review_index)
+            self._review_analysis_cursor = 0
+            self._review_variations[int(self._review_analysis_base_index)] = []
+            self._review_variation_fens[int(self._review_analysis_base_index)] = []
+            self._review_variation_ucis[int(self._review_analysis_base_index)] = []
+        self._review_analysis_fen = str(fen)
+        try:
+            self.last_move = []
+        except Exception:
+            pass
+        self._load_fen_into_ui(str(fen))
+        self.request_eval()
+        self.request_review_pv()
+        # Best move from mainline doesn't apply in analysis.
+        self.review_best_move_uci = ''
+        self.review_arrow = None
+
+    def _review_set_variation_cursor(self, base_index: int, cursor: int, play_sound: bool = True) -> None:
+        """Set analysis overlay to a specific ply inside an existing variation.
+
+        cursor: 0=base position, 1..N=variation ply index.
+        """
+        if not self.review_active:
+            return
+
+        base = int(base_index)
+        try:
+            cur = int(cursor)
+        except Exception:
+            cur = 0
+
+        vfens = self._review_variation_fens.get(base, [])
+        vucis = self._review_variation_ucis.get(base, [])
+
+        if cur < 0:
+            cur = 0
+        if cur > len(vfens):
+            cur = len(vfens)
+
+        self._review_analysis_active = True
+        self._review_analysis_base_index = int(base)
+        self._review_analysis_cursor = int(cur)
+        self._review_analysis_fen = ''
+        # Switching to a user-saved variation: PV browsing is no longer active.
+        try:
+            self._review_pv_variation_active = False
+        except Exception:
+            pass
+
+        # Base position.
+        if cur == 0:
+            try:
+                tgt_fen = str(self.review_fens[base]) if 0 <= base < len(self.review_fens) else ''
+            except Exception:
+                tgt_fen = ''
+            if not tgt_fen:
+                return
+            try:
+                self.last_move = [] if base <= 0 else [str(self.review_plies[base - 1].uci())]
+            except Exception:
+                self.last_move = []
+            self._load_fen_into_ui(tgt_fen)
+            self.request_eval()
+            self.request_review_pv()
+            self.review_best_move_uci = ''
+            self.review_arrow = None
+            return
+
+        # Inside variation.
+        try:
+            tgt_fen = str(vfens[cur - 1])
+        except Exception:
+            tgt_fen = ''
+        if not tgt_fen:
+            return
+
+        uci = ''
+        try:
+            uci = str(vucis[cur - 1]) if 0 <= (cur - 1) < len(vucis) else ''
+        except Exception:
+            uci = ''
+
+        if uci:
+            try:
+                self.last_move = [uci]
+            except Exception:
+                self.last_move = []
+
+            if play_sound:
+                try:
+                    mv = chess.Move.from_uci(str(uci))
+                    if cur == 1:
+                        fen_before = str(self.review_fens[base]) if 0 <= base < len(self.review_fens) else ''
+                    else:
+                        fen_before = str(vfens[cur - 2])
+                    if fen_before:
+                        self._play_sound_for_move_from_fen(str(fen_before), mv)
+                except Exception:
+                    pass
+        else:
+            try:
+                self.last_move = []
+            except Exception:
+                pass
+
+        self._load_fen_into_ui(tgt_fen)
+        self.request_eval()
+        self.request_review_pv()
+        self.review_best_move_uci = ''
+        self.review_arrow = None
+
+    def _review_start_pv_variation(self, pv_item: dict, move_index: int) -> None:
+        """Start an analysis line from the current displayed position using a PV sequence."""
+        if not self.review_active:
+            return
+        if not isinstance(pv_item, dict):
+            return
+
+        try:
+            base_fen = str(self._review_display_fen() or '')
+        except Exception:
+            base_fen = ''
+        if not base_fen:
+            return
+
+        # PV browsing is anchored at the current mainline ply.
+        base = int(self.review_index)
+
+        uci_list = pv_item.get('uci') if isinstance(pv_item.get('uci'), list) else []
+        san_list = pv_item.get('moves') if isinstance(pv_item.get('moves'), list) else []
+        fen_list = pv_item.get('fens') if isinstance(pv_item.get('fens'), list) else []
+        try:
+            uci_list = [str(x) for x in uci_list]
+            san_list = [str(x) for x in san_list]
+            fen_list = [str(x) for x in fen_list]
+        except Exception:
+            uci_list, san_list, fen_list = [], [], []
+        if not fen_list:
+            return
+
+        # Activate PV browsing mode (do NOT overwrite the user's saved variation).
+        self._review_analysis_active = True
+        self._review_analysis_base_index = int(base)
+        self._review_analysis_fen = ''
+        self._review_analysis_cursor = max(1, min(int(move_index) + 1, len(fen_list)))
+        try:
+            self._review_pv_variation_active = True
+            self._review_pv_variation_base_index = int(base)
+            self._review_pv_variation_fens = list(fen_list)
+            self._review_pv_variation_ucis = list(uci_list)
+            self._review_pv_variation_sans = list(san_list)
+        except Exception:
+            pass
+
+        # Determine target fen and the move to highlight/play.
+        tgt_fen = str(fen_list[self._review_analysis_cursor - 1])
+        uci = ''
+        try:
+            uci = str(uci_list[self._review_analysis_cursor - 1])
+        except Exception:
+            uci = ''
+
+        # Highlight + sound like normal forward navigation.
+        if uci:
+            try:
+                self.last_move = [uci]
+            except Exception:
+                self.last_move = []
+            try:
+                mv = chess.Move.from_uci(str(uci))
+                # fen_before: base_fen for first move, otherwise previous PV fen.
+                if self._review_analysis_cursor == 1:
+                    fen_before = base_fen
+                else:
+                    fen_before = str(fen_list[self._review_analysis_cursor - 2])
+                self._play_sound_for_move_from_fen(str(fen_before), mv)
+            except Exception:
+                pass
+
+        self._load_fen_into_ui(tgt_fen)
+        self.request_eval()
+        self.request_review_pv()
+        self.review_best_move_uci = ''
+        self.review_arrow = None
+
+    def _review_append_pv_to_user_variation(self, pv_item: dict, move_index: int) -> bool:
+        """Append a PV prefix (up to move_index) to the end of the current user variation."""
+        if not self.review_active:
+            return False
+        if not isinstance(pv_item, dict):
+            return False
+
+        # Must be inside a user variation (cursor > 0) to append.
+        try:
+            if not bool(getattr(self, '_review_analysis_active', False)):
+                return False
+            if bool(getattr(self, '_review_pv_variation_active', False)):
+                # If we were browsing PV, treat as not appending to a user variation.
+                return False
+            base = int(getattr(self, '_review_analysis_base_index', int(self.review_index)))
+            cur = int(getattr(self, '_review_analysis_cursor', 0) or 0)
+            if cur <= 0:
+                return False
+        except Exception:
+            return False
+
+        uci_list = pv_item.get('uci') if isinstance(pv_item.get('uci'), list) else []
+        san_list = pv_item.get('moves') if isinstance(pv_item.get('moves'), list) else []
+        fen_list = pv_item.get('fens') if isinstance(pv_item.get('fens'), list) else []
+        try:
+            uci_list = [str(x) for x in uci_list]
+            san_list = [str(x) for x in san_list]
+            fen_list = [str(x) for x in fen_list]
+        except Exception:
+            uci_list, san_list, fen_list = [], [], []
+
+        n = min(int(move_index) + 1, len(uci_list), len(san_list), len(fen_list))
+        if n <= 0:
+            return False
+
+        # Truncate to current cursor (if the user stepped back) and then append the PV prefix.
+        try:
+            self._review_variations[base] = list((self._review_variations.get(base, []) or [])[:cur])
+        except Exception:
+            self._review_variations[base] = []
+        try:
+            self._review_variation_fens[base] = list((self._review_variation_fens.get(base, []) or [])[:cur])
+        except Exception:
+            self._review_variation_fens[base] = []
+        try:
+            self._review_variation_ucis[base] = list((self._review_variation_ucis.get(base, []) or [])[:cur])
+        except Exception:
+            self._review_variation_ucis[base] = []
+
+        try:
+            self._review_variations[base].extend([str(x) for x in san_list[:n]])
+        except Exception:
+            pass
+        try:
+            self._review_variation_fens[base].extend([str(x) for x in fen_list[:n]])
+        except Exception:
+            pass
+        try:
+            self._review_variation_ucis[base].extend([str(x) for x in uci_list[:n]])
+        except Exception:
+            pass
+
+        # Move cursor to the new end and update display.
+        try:
+            self._review_analysis_cursor = len(self._review_variation_fens.get(base, []) or [])
+        except Exception:
+            self._review_analysis_cursor = cur + n
+        try:
+            self._review_analysis_fen = str(self._review_variation_fens.get(base, [])[-1])
+        except Exception:
+            self._review_analysis_fen = ''
+
+        tgt_fen = ''
+        try:
+            tgt_fen = str(self._review_variation_fens.get(base, [])[-1])
+        except Exception:
+            tgt_fen = ''
+        if not tgt_fen:
+            return False
+
+        try:
+            self.last_move = [str(self._review_variation_ucis.get(base, [])[-1])]
+        except Exception:
+            self.last_move = []
+        self._load_fen_into_ui(tgt_fen)
+        self.request_eval()
+        self.request_review_pv()
+        self.review_best_move_uci = ''
+        self.review_arrow = None
+        return True
 
     def _play_sound_for_move_from_fen(self, fen_before: str, mv: chess.Move) -> None:
         if not self.sound_enabled:
@@ -1600,9 +2466,10 @@ class Engine:
 
         # First click: select a piece
         if self.selected_square is None:
-            piece = self.board[target_row][target_col]
-            if piece == ' ' and premove_mode:
+            if premove_mode:
                 piece = self._virtual_player_piece_at(int(target_row), int(target_col))
+            else:
+                piece = self.board[target_row][target_col]
             if piece != ' ' and piece is not None and piece.colour[0] == active_colour:
                 self.selected_square = (target_row, target_col)
             else:
@@ -1616,16 +2483,18 @@ class Engine:
 
         # Clicking another own piece switches selection (except in premove mode, where the user
         # may want to premove onto that square if the piece could move there on an empty board).
-        target_piece = self.board[target_row][target_col]
-        if target_piece == ' ' and premove_mode:
+        if premove_mode:
             target_piece = self._virtual_player_piece_at(int(target_row), int(target_col))
+        else:
+            target_piece = self.board[target_row][target_col]
         if target_piece != ' ' and target_piece is not None and target_piece.colour[0] == active_colour:
             if premove_mode:
                 # Try to treat this click as a premove destination first.
                 try:
-                    sel_piece = self.board[sel_row][sel_col]
-                    if sel_piece == ' ':
+                    if premove_mode:
                         sel_piece = self._virtual_player_piece_at(int(sel_row), int(sel_col))
+                    else:
+                        sel_piece = self.board[sel_row][sel_col]
                     if sel_piece != ' ' and sel_piece is not None:
                         vr, vc = self._virtual_position_for_piece(sel_piece)
                         pseudo_positions, _pseudo_caps = self._pseudo_moves_for_piece(sel_piece, int(vr), int(vc))
@@ -1643,7 +2512,7 @@ class Engine:
             return
 
         sel_piece = self.board[sel_row][sel_col]
-        if sel_piece == ' ' and premove_mode:
+        if premove_mode:
             sel_piece = self._virtual_player_piece_at(int(sel_row), int(sel_col))
         if sel_piece == ' ' or sel_piece is None:
             self.selected_square = None
@@ -1740,13 +2609,19 @@ class Engine:
         except Exception:
             pass
 
-        # While browsing history, don't apply AI results (keeps browsing stable).
-        if not getattr(self, '_game_browse_active', False):
-            try:
-                self._poll_ai_result()
-            except Exception:
-                pass
+        # Apply AI results even while browsing history.
+        # (_poll_ai_result preserves the browsed view while updating the live game state.)
+        try:
+            self._poll_ai_result()
+        except Exception:
+            pass
         self._ensure_layout()
+        # Clear the entire frame first. Without this, pixels outside the board (e.g. review/analysis
+        # panels) can remain visible when switching modes or returning from menus.
+        try:
+            self.screen.fill((0, 0, 0))
+        except Exception:
+            pass
         self.draw_board()
         if self.updates:
             self.update_board()
@@ -1755,7 +2630,13 @@ class Engine:
         # Draw BEFORE pieces so indicators don't cover capture targets.
         if self.movement_click_enabled and self.selected_square is not None and not self.updates:
             try:
-                premove_mode = bool(self.player_vs_ai and self.turn == self._ai_side() and not self.review_active and not self.end_popup_active)
+                premove_mode = bool(
+                    self.player_vs_ai
+                    and self.turn == self._ai_side()
+                    and not self.review_active
+                    and not getattr(self, 'analysis_active', False)
+                    and not self.end_popup_active
+                )
                 active_colour = self._player_side() if premove_mode else self.turn
 
                 sel_row, sel_col = self.selected_square
@@ -1800,9 +2681,13 @@ class Engine:
             pass
 
         # Top-most overlays (must render after pieces/arrows).
+        if not self.review_active and not self.analysis_active and not self.end_popup_active:
+            self._draw_game_movelist_overlay()
         if self.review_active:
             self._draw_review_move_quality_marker()
             self._draw_review_overlay()
+        if self.analysis_active:
+            self._draw_analysis_overlay()
         if self.end_popup_active:
             self._draw_end_popup()
         for event in pg.event.get():
@@ -1817,8 +2702,18 @@ class Engine:
                         self.exit_review()
                     elif event.key == pg.K_LEFT:
                         self.review_step(-1)
+                        try:
+                            self._nav_hold_dir = -1
+                            self._nav_hold_next_ms = int(pg.time.get_ticks()) + 240
+                        except Exception:
+                            pass
                     elif event.key == pg.K_RIGHT:
                         self.review_step(1)
+                        try:
+                            self._nav_hold_dir = 1
+                            self._nav_hold_next_ms = int(pg.time.get_ticks()) + 240
+                        except Exception:
+                            pass
                     elif event.key == pg.K_b:
                         self.review_show_best_move = not bool(self.review_show_best_move)
                         if not self.review_show_best_move:
@@ -1832,6 +2727,13 @@ class Engine:
                         else:
                             if not self._review_analysis_active:
                                 self._request_review_best()
+                elif event.type == pg.KEYUP:
+                    if event.key in (pg.K_LEFT, pg.K_RIGHT):
+                        try:
+                            self._nav_hold_dir = 0
+                            self._nav_hold_next_ms = None
+                        except Exception:
+                            pass
                 elif event.type == pg.MOUSEBUTTONDOWN:
                     # Mouse wheel scrolls the move list in review mode
                     if event.button == 4:
@@ -1851,11 +2753,31 @@ class Engine:
                                 continue
                         except Exception:
                             pass
+                        # Board resize handle (bottom-right). Consume the click.
+                        try:
+                            if self._handle_board_resize_begin(event.pos):
+                                continue
+                        except Exception:
+                            pass
                         # Match main-game behavior: set left-down state and record tx/ty.
                         self.left = True
                         self._mouse_down_pos = pg.mouse.get_pos()
                         self.click_left()
                     elif event.button == 3:
+                        # Right-click while dragging cancels the drag (match main-game behavior).
+                        try:
+                            if self.left or self.updates:
+                                self._ignore_next_left_mouse_up = True
+                                self.updates_kill()
+                                self.selected_square = None
+                                self._mouse_down_pos = None
+                                self.tx = None
+                                self.ty = None
+                                self.txr = None
+                                self.tyr = None
+                                continue
+                        except Exception:
+                            pass
                         # Right-click highlights/arrows (board-only), like normal play.
                         try:
                             if self._mouse_to_square(event.pos) is not None:
@@ -1863,6 +2785,12 @@ class Engine:
                         except Exception:
                             pass
                 elif event.type == pg.MOUSEMOTION:
+                    if getattr(self, '_board_resize_active', False):
+                        try:
+                            self._handle_board_resize_drag(event.pos)
+                        except Exception:
+                            pass
+                        continue
                     # Match main-game behavior: only start dragging after the cursor moves a bit.
                     if self.movement_drag_enabled and self.left and not self.updates and self._mouse_down_pos is not None:
                         mx, my = pg.mouse.get_pos()
@@ -1873,12 +2801,34 @@ class Engine:
                             # If the user started dragging, clear click-selection dots.
                             self.selected_square = None
                 elif event.type == pg.MOUSEBUTTONUP and event.button == 1:
+                    # Swallow one-shot left mouse-up after a right-click drag cancel.
+                    if getattr(self, '_ignore_next_left_mouse_up', False):
+                        self._ignore_next_left_mouse_up = False
+                        self.left = False
+                        self.updates = False
+                        self._mouse_down_pos = None
+                        continue
+                    if getattr(self, '_board_resize_active', False):
+                        try:
+                            self._handle_board_resize_end()
+                        except Exception:
+                            pass
+                        self.updates = False
+                        self.left = False
+                        self._mouse_down_pos = None
+                        continue
                     pos = pg.mouse.get_pos()
                     handled = False
                     try:
                         handled = bool(self._handle_review_click(pos))
                     except Exception:
                         handled = False
+                    if handled:
+                        # Always release left-click state even if the panel handled the click.
+                        # Otherwise the app can get stuck thinking we're dragging.
+                        self.left = False
+                        self.updates = False
+                        self._mouse_down_pos = None
                     if not handled:
                         self.left = False
                         # Always clear right-click arrows/highlights on a left click, like the main game.
@@ -1906,6 +2856,190 @@ class Engine:
                         pass
                 elif event.type == pg.VIDEORESIZE:
                     # Keep resize responsive while in review mode.
+                    self.screen = pg.display.set_mode((event.w, event.h), pg.RESIZABLE, vsync=1)
+                    self.settings.resize_event()
+                    self.background = pg.image.load('data/img/background_dark.png').convert()
+                    self.background = pg.transform.smoothscale(self.background, (event.w, event.h))
+                    self._ensure_layout(force=True)
+                continue
+
+            # Analysis mode: navigation + building a line.
+            if self.analysis_active:
+                if event.type == pg.KEYDOWN:
+                    if event.key == pg.K_ESCAPE:
+                        self.exit_analysis()
+                    elif event.key == pg.K_LEFT:
+                        self.analysis_step(-1)
+                        try:
+                            self._nav_hold_dir = -1
+                            self._nav_hold_next_ms = int(pg.time.get_ticks()) + 240
+                        except Exception:
+                            pass
+                    elif event.key == pg.K_RIGHT:
+                        self.analysis_step(1)
+                        try:
+                            self._nav_hold_dir = 1
+                            self._nav_hold_next_ms = int(pg.time.get_ticks()) + 240
+                        except Exception:
+                            pass
+                    elif event.key == pg.K_s and (pg.key.get_mods() & pg.KMOD_CTRL):
+                        self.save_analysis()
+                elif event.type == pg.KEYUP:
+                    if event.key in (pg.K_LEFT, pg.K_RIGHT):
+                        try:
+                            self._nav_hold_dir = 0
+                            self._nav_hold_next_ms = None
+                        except Exception:
+                            pass
+                elif event.type == pg.MOUSEBUTTONDOWN:
+                    if event.button == 4:
+                        self._analysis_scroll_moves(-3)
+                    elif event.button == 5:
+                        self._analysis_scroll_moves(3)
+                    elif event.button == 1:
+                        # Cog opens settings in analysis mode.
+                        try:
+                            if self._settings_btn_rect is not None and self._settings_btn_rect.collidepoint(event.pos):
+                                self._open_settings_menu()
+                                self.left = False
+                                self._mouse_down_pos = None
+                                self.updates = False
+                                self.selected_square = None
+                                self._ensure_layout(force=True)
+                                continue
+                        except Exception:
+                            pass
+                        # In analysis mode, allow the in-game Undo button (no Resign) to work.
+                        try:
+                            if self._undo_btn_rect is not None and self._undo_btn_rect.collidepoint(event.pos):
+                                self._handle_undo_pressed()
+                                continue
+                        except Exception:
+                            pass
+                        # In analysis mode, allow opening saved analyses (next to Undo).
+                        try:
+                            r = getattr(self, '_open_saved_analysis_btn_rect', None)
+                            if r is not None and r.collidepoint(event.pos):
+                                self._open_saved_analysis_menu()
+                                self.left = False
+                                self._mouse_down_pos = None
+                                self.updates = False
+                                self.selected_square = None
+                                self._ensure_layout(force=True)
+                                continue
+                        except Exception:
+                            pass
+                        # In analysis mode, allow saving via a button (same as Ctrl+S).
+                        try:
+                            r = getattr(self, '_save_analysis_btn_rect', None)
+                            if r is not None and r.collidepoint(event.pos):
+                                self.save_analysis()
+                                self.left = False
+                                self._mouse_down_pos = None
+                                self.updates = False
+                                self.selected_square = None
+                                self._ensure_layout(force=True)
+                                continue
+                        except Exception:
+                            pass
+                        # Board resize handle (bottom-right). Consume the click.
+                        try:
+                            if self._handle_board_resize_begin(event.pos):
+                                continue
+                        except Exception:
+                            pass
+                        # Match main-game behavior: set left-down state and record tx/ty.
+                        self.left = True
+                        self._mouse_down_pos = pg.mouse.get_pos()
+                        self.click_left()
+                    elif event.button == 3:
+                        # Right-click while dragging cancels the drag (match main-game behavior).
+                        try:
+                            if self.left or self.updates:
+                                self._ignore_next_left_mouse_up = True
+                                self.updates_kill()
+                                self.selected_square = None
+                                self._mouse_down_pos = None
+                                self.tx = None
+                                self.ty = None
+                                self.txr = None
+                                self.tyr = None
+                                continue
+                        except Exception:
+                            pass
+                        try:
+                            if self._mouse_to_square(event.pos) is not None:
+                                self.click_right()
+                        except Exception:
+                            pass
+                elif event.type == pg.MOUSEMOTION:
+                    if getattr(self, '_board_resize_active', False):
+                        try:
+                            self._handle_board_resize_drag(event.pos)
+                        except Exception:
+                            pass
+                        continue
+                    if self.movement_drag_enabled and self.left and not self.updates and self._mouse_down_pos is not None:
+                        mx, my = pg.mouse.get_pos()
+                        dx = mx - self._mouse_down_pos[0]
+                        dy = my - self._mouse_down_pos[1]
+                        if (dx * dx + dy * dy) >= (self._drag_threshold_px * self._drag_threshold_px):
+                            self.updates = True
+                            self.selected_square = None
+                elif event.type == pg.MOUSEBUTTONUP and event.button == 1:
+                    # Swallow one-shot left mouse-up after a right-click drag cancel.
+                    if getattr(self, '_ignore_next_left_mouse_up', False):
+                        self._ignore_next_left_mouse_up = False
+                        self.left = False
+                        self.updates = False
+                        self._mouse_down_pos = None
+                        continue
+                    if getattr(self, '_board_resize_active', False):
+                        try:
+                            self._handle_board_resize_end()
+                        except Exception:
+                            pass
+                        self.updates = False
+                        self.left = False
+                        self._mouse_down_pos = None
+                        continue
+                    pos = pg.mouse.get_pos()
+                    handled = False
+                    try:
+                        handled = bool(self._handle_analysis_click(pos))
+                    except Exception:
+                        handled = False
+                    was_dragging = bool(self.updates)
+
+                    if handled:
+                        # Always release left-click state even if the panel handled the click.
+                        self.left = False
+                        self.updates = False
+                        self._mouse_down_pos = None
+                    else:
+                        self.left = False
+                        try:
+                            self.highlighted.clear()
+                            self.arrows.clear()
+                        except Exception:
+                            pass
+
+                        if was_dragging:
+                            # Drag-release path
+                            self._handle_analysis_drag_release(pos)
+                        else:
+                            # Click-to-move path
+                            self._handle_analysis_board_click(pos)
+
+                        self.updates = False
+                        self._mouse_down_pos = None
+                elif event.type == pg.MOUSEBUTTONUP and event.button == 3:
+                    try:
+                        if not self.left and self._mouse_to_square(event.pos) is not None:
+                            self.un_click_right(True)
+                    except Exception:
+                        pass
+                elif event.type == pg.VIDEORESIZE:
                     self.screen = pg.display.set_mode((event.w, event.h), pg.RESIZABLE, vsync=1)
                     self.settings.resize_event()
                     self.background = pg.image.load('data/img/background_dark.png').convert()
@@ -1942,6 +3076,20 @@ class Engine:
                             continue
                         if self._resign_btn_rect is not None and self._resign_btn_rect.collidepoint(event.pos):
                             self._handle_resign_pressed()
+                            continue
+                        if self._toggle_movelist_btn_rect is not None and self._toggle_movelist_btn_rect.collidepoint(event.pos):
+                            try:
+                                self.game_movelist_visible = not bool(getattr(self, 'game_movelist_visible', True))
+                            except Exception:
+                                self.game_movelist_visible = True
+                            self._ensure_layout(force=True)
+                            continue
+                    except Exception:
+                        pass
+
+                    # Move list clicks (jump-to-ply) should be handled before any board interaction.
+                    try:
+                        if self._handle_game_movelist_click(event.pos):
                             continue
                     except Exception:
                         pass
@@ -2003,6 +3151,9 @@ class Engine:
                     self.arrows.clear()
                     if self._ignore_next_left_mouse_up:
                         self._ignore_next_left_mouse_up = False
+                    # While browsing history, do not allow making moves.
+                    elif getattr(self, '_game_browse_active', False):
+                        pass
                     elif self.movement_click_enabled and not self.game_just_ended:
                         self._handle_click_to_move(pg.mouse.get_pos())
                 elif event.button == 2:
@@ -2031,15 +3182,38 @@ class Engine:
                             idx = int(self._game_browse_index or 0)
                             if event.key == pg.K_LEFT:
                                 self._set_game_browse_index(idx - 1, play_sound=True)
+                                try:
+                                    self._nav_hold_dir = -1
+                                    self._nav_hold_next_ms = int(pg.time.get_ticks()) + 240
+                                except Exception:
+                                    pass
                             else:
                                 # Right arrow: step forward; if at latest, exit browse.
                                 if idx >= len(self.game_fens) - 1:
                                     self._exit_game_browse()
+                                    try:
+                                        self._nav_hold_dir = 0
+                                        self._nav_hold_next_ms = None
+                                    except Exception:
+                                        pass
                                 else:
                                     self._set_game_browse_index(idx + 1, play_sound=True)
+                                    try:
+                                        self._nav_hold_dir = 1
+                                        self._nav_hold_next_ms = int(pg.time.get_ticks()) + 240
+                                    except Exception:
+                                        pass
                     except Exception:
                         pass
                     continue
+
+            elif event.type == pg.KEYUP:
+                if event.key in (pg.K_LEFT, pg.K_RIGHT):
+                    try:
+                        self._nav_hold_dir = 0
+                        self._nav_hold_next_ms = None
+                    except Exception:
+                        pass
 
                 if event.key == pg.K_s and pg.key.get_mods() & pg.KMOD_CTRL:
                     # Save and reset (not an end-game popup)
@@ -2077,12 +3251,10 @@ class Engine:
                     with self._play_engine_lock:
                         self._apply_ai_strength()
                 if event.key == pg.K_u:
-                    if len(self.game_fens) > 1:
-                        self.undo_move(False)
-                        self.un_click_right(False)
-                    elif len(self.game_fens) == 1:
-                        self.undo_move(True)
-                        self.un_click_right(False)
+                    try:
+                        self._handle_undo_pressed()
+                    except Exception:
+                        pass
                 if event.key == pg.K_ESCAPE:
                     if getattr(self, '_game_browse_active', False):
                         try:
@@ -2111,6 +3283,43 @@ class Engine:
 
         if self.ai_vs_ai:
             self.un_click_left()
+
+        # Fast key-hold navigation in review/analysis and in-game browse.
+        try:
+            if self.review_active or self.analysis_active or getattr(self, '_game_browse_active', False):
+                hold_dir = int(getattr(self, '_nav_hold_dir', 0) or 0)
+                next_ms = getattr(self, '_nav_hold_next_ms', None)
+                if hold_dir != 0 and next_ms is not None:
+                    now = int(pg.time.get_ticks())
+                    interval = 55  # ~18 steps/sec
+                    # Catch up in case of a slow frame.
+                    while now >= int(next_ms):
+                        if self.review_active:
+                            self.review_step(hold_dir)
+                        elif self.analysis_active:
+                            self.analysis_step(hold_dir)
+                        elif getattr(self, '_game_browse_active', False):
+                            try:
+                                idx = int(self._game_browse_index or 0)
+                                if hold_dir < 0:
+                                    self._set_game_browse_index(idx - 1, play_sound=True)
+                                else:
+                                    if idx >= len(self.game_fens) - 1:
+                                        self._exit_game_browse()
+                                        self._nav_hold_dir = 0
+                                        self._nav_hold_next_ms = None
+                                        break
+                                    self._set_game_browse_index(idx + 1, play_sound=True)
+                            except Exception:
+                                pass
+                        next_ms = int(next_ms) + interval
+                    self._nav_hold_next_ms = int(next_ms)
+            else:
+                # Ensure we don't keep auto-stepping after leaving modes.
+                self._nav_hold_dir = 0
+                self._nav_hold_next_ms = None
+        except Exception:
+            pass
         pg.display.flip()
         self.clock.tick(150)
 
@@ -2302,14 +3511,51 @@ class Engine:
         if not self._review_analysis_active:
             self._review_analysis_active = True
             self._review_analysis_base_index = int(self.review_index)
+            self._review_analysis_cursor = 0
             self._review_variations[int(self.review_index)] = []
+            self._review_variation_fens[int(self.review_index)] = []
+            self._review_variation_ucis[int(self.review_index)] = []
+
+        base = int(self._review_analysis_base_index)
+        cur = int(getattr(self, '_review_analysis_cursor', 0) or 0)
+
+        # If the user stepped back within the variation and then makes a new move,
+        # truncate the tail and continue from the current cursor.
         try:
-            self._review_variations[int(self._review_analysis_base_index)].append(str(san))
+            if cur < len(self._review_variations.get(base, [])):
+                self._review_variations[base] = list(self._review_variations.get(base, [])[:cur])
+        except Exception:
+            pass
+        try:
+            if cur < len(self._review_variation_fens.get(base, [])):
+                self._review_variation_fens[base] = list(self._review_variation_fens.get(base, [])[:cur])
+        except Exception:
+            pass
+        try:
+            if cur < len(self._review_variation_ucis.get(base, [])):
+                self._review_variation_ucis[base] = list(self._review_variation_ucis.get(base, [])[:cur])
         except Exception:
             pass
 
         new_fen = b.fen()
-        self._review_analysis_fen = new_fen
+        self._review_analysis_fen = str(new_fen)
+        try:
+            self._review_variations[int(base)].append(str(san))
+        except Exception:
+            pass
+        try:
+            self._review_variation_fens[int(base)].append(str(new_fen))
+        except Exception:
+            pass
+        try:
+            self._review_variation_ucis[int(base)].append(str(uci))
+        except Exception:
+            pass
+        try:
+            self._review_analysis_cursor = len(self._review_variation_fens.get(int(base), []) or [])
+        except Exception:
+            pass
+
         self.last_move = [str(uci)]
         self._load_fen_into_ui(new_fen)
         self.request_eval()
@@ -2452,26 +3698,37 @@ class Engine:
             elo_i = self.ai_elo
 
         # IMPORTANT: movetime heavily affects playing strength.
-        # The previous cap (~260ms) made even very high Elo settings too weak.
+        # Keep this modest; the "real-time" thinking delay is handled separately
+        # (see _ai_delay_seconds_from_clock).
         if elo_i <= 800:
-            think_ms = 80
+            think_ms = 70
         elif elo_i <= 1200:
-            think_ms = 140
+            think_ms = 110
         elif elo_i <= 1600:
-            think_ms = 260
+            think_ms = 170
         elif elo_i <= 2000:
-            think_ms = 450
+            think_ms = 260
         elif elo_i <= 2400:
-            think_ms = 800
+            think_ms = 420
         elif elo_i <= 2800:
-            think_ms = 1400
+            think_ms = 650
         else:
-            think_ms = 2200
+            think_ms = 900
 
-        # Extra weakening below typical Stockfish Elo floor: pick from top moves randomly.
-        # This helps achieve "beginner" strengths in practice.
-        if elo_i < 1200:
-            top_n = 4 if elo_i < 900 else 3
+        # Add human-like imperfection by sometimes choosing from the top moves.
+        # This helps prevent "perfect" play at mid Elos even with tiny movetimes.
+        # Lower Elo -> more randomness; higher Elo -> mostly best move.
+        top_n = 1
+        if elo_i < 900:
+            top_n = 4
+        elif elo_i < 1400:
+            top_n = 3
+        elif elo_i < 2000:
+            top_n = 2
+        else:
+            top_n = 1
+
+        if top_n > 1:
             try:
                 # get_top_moves uses MultiPV. Ensure it's high enough for this query.
                 try:
@@ -2479,16 +3736,100 @@ class Engine:
                 except Exception:
                     pass
                 top_moves = self.stockfish.get_top_moves(top_n) or []
-                legal = [m.get('Move') for m in top_moves if isinstance(m, dict) and m.get('Move')]
+                # Keep evaluations so we can avoid choosing obvious blunders.
+                scored: list[tuple[str, int | None, int | None]] = []  # (uci, centipawn, mate)
+                for m in top_moves:
+                    if not isinstance(m, dict):
+                        continue
+                    uci = m.get('Move')
+                    if not uci:
+                        continue
+                    cp = None
+                    mate = None
+                    try:
+                        if m.get('Centipawn') is not None:
+                            cp = int(m.get('Centipawn'))
+                        elif m.get('Centipawns') is not None:
+                            cp = int(m.get('Centipawns'))
+                    except Exception:
+                        cp = None
+                    try:
+                        if m.get('Mate') is not None:
+                            mate = int(m.get('Mate'))
+                    except Exception:
+                        mate = None
+                    scored.append((str(uci), cp, mate))
+
+                # Always assume Stockfish returns best move first.
+                best_cp = scored[0][1] if scored else None
+                best_mate = scored[0][2] if scored else None
+
+                # Max allowed eval drop (centipawns) when intentionally deviating.
+                # Smaller at higher Elo so the bot doesn't throw games.
+                if elo_i < 900:
+                    max_loss_cp = 260
+                elif elo_i < 1400:
+                    max_loss_cp = 160
+                elif elo_i < 2000:
+                    max_loss_cp = 90
+                else:
+                    max_loss_cp = 60
+
+                def acceptable(uci: str, cp: int | None, mate: int | None) -> bool:
+                    # Never pick a move that walks into a forced mate against us
+                    # if the best line isn't also losing by mate.
+                    if best_mate is None:
+                        if mate is not None and mate < 0:
+                            return False
+                    else:
+                        # If best is a winning mate, only pick other winning mates.
+                        if best_mate > 0:
+                            return mate is not None and mate > 0
+                        # If best is a losing mate, avoid making it much faster.
+                        if best_mate < 0:
+                            if mate is None or mate >= 0:
+                                return False
+                            try:
+                                # Allow at most 2 moves faster mate against us.
+                                return abs(int(mate)) >= (abs(int(best_mate)) - 2)
+                            except Exception:
+                                return False
+
+                    # Centipawn based filtering.
+                    if best_cp is None or cp is None:
+                        # If we don't have cp scores, be conservative.
+                        return uci == scored[0][0]
+                    try:
+                        loss = int(best_cp) - int(cp)
+                    except Exception:
+                        return uci == scored[0][0]
+                    return loss <= int(max_loss_cp)
+
+                legal = [uci for (uci, cp, mate) in scored if acceptable(uci, cp, mate)]
                 try:
                     self.stockfish.update_engine_parameters({"MultiPV": 1})
                 except Exception:
                     pass
                 if legal:
                     # Bias toward the best move as Elo increases.
-                    if elo_i < 800 and len(legal) >= 2:
-                        return random.choice(legal[1:])
-                    return random.choice(legal)
+                    if len(legal) == 2:
+                        # (best, second)
+                        p_best = 0.55 if elo_i < 900 else (0.75 if elo_i < 1400 else 0.88)
+                        return legal[0] if random.random() < p_best else legal[1]
+                    if len(legal) >= 3:
+                        # (best, second, third, ...)
+                        if elo_i < 900:
+                            weights = [0.40, 0.30, 0.30]
+                        elif elo_i < 1400:
+                            weights = [0.65, 0.25, 0.10]
+                        else:
+                            weights = [0.82, 0.15, 0.03]
+                        r = random.random()
+                        if r < weights[0]:
+                            return legal[0]
+                        if r < weights[0] + weights[1]:
+                            return legal[1]
+                        return legal[2]
             except Exception:
                 pass
 
@@ -2519,20 +3860,48 @@ class Engine:
                 pass
             return
 
-        # Otherwise use the Elo limiter.
+        # Otherwise limit strength.
+        # We apply BOTH:
+        # - UCI_LimitStrength/UCI_Elo (when supported by the engine)
+        # - Skill Level mapping (fallback if UCI Elo limiting is ignored)
         try:
-            self.stockfish.update_engine_parameters({"UCI_LimitStrength": "true"})
+            self.stockfish.update_engine_parameters({"UCI_LimitStrength": "true", "UCI_Elo": int(elo_i)})
         except Exception:
-            pass
+            try:
+                self.stockfish.update_engine_parameters({"UCI_LimitStrength": "true"})
+            except Exception:
+                pass
+
         try:
             self.stockfish.set_elo_rating(int(elo_i))
         except Exception:
             pass
-        # Keep skill at max so we are not accidentally weakening the engine.
+
+    def _ai_delay_seconds_from_clock(self) -> float:
+        """Return a human-like think delay based on remaining clock time.
+
+        Capped at 2 seconds, and also capped by remaining time to avoid going negative.
+        """
         try:
-            self.stockfish.set_skill_level(20)
+            side = self._ai_side()
+            remaining = float(self._clock_white if side == 'w' else self._clock_black)
         except Exception:
-            pass
+            return 0.75
+
+        try:
+            inc = float(getattr(self, '_tc_increment_seconds', 0) or 0)
+        except Exception:
+            inc = 0.0
+
+        # Base "human" delay from clock: ~remaining/30 plus a bit of increment.
+        delay = (remaining / 30.0) + (0.60 * inc)
+        delay = max(0.20, min(2.0, delay))
+
+        # Never exceed remaining time (leave a tiny buffer).
+        if remaining <= 0.25:
+            return 0.0
+        delay = min(delay, max(0.0, remaining - 0.10))
+        return float(delay)
 
     def change_ai_elo(self, elo: int) -> None:
         """Set AI strength to a target Elo rating."""
@@ -3120,7 +4489,7 @@ class Engine:
 
     def _handle_board_resize_begin(self, pos: tuple[int, int]) -> bool:
         """Start a board resize drag if the user clicked the bottom-right handle."""
-        if self.review_active or self.end_popup_active:
+        if self.end_popup_active:
             return False
         rect = getattr(self, '_board_resize_handle_rect', None)
         if rect is None:
@@ -3172,14 +4541,34 @@ class Engine:
         if self.end_popup_active or self.review_active:
             self._undo_btn_rect = None
             self._resign_btn_rect = None
+            self._toggle_movelist_btn_rect = None
+            try:
+                self._open_saved_analysis_btn_rect = None
+                self._save_analysis_btn_rect = None
+            except Exception:
+                pass
             return
+
+        # In analysis mode, show Undo + Open Saved Analysis (no Resign).
+        analysis_only = bool(getattr(self, 'analysis_active', False))
 
         board_rect = self._board_rect()
         margin = max(8, int(self.size * 0.12))
         box_h = max(26, int(self.size * 0.55))
-        y = max(6, int(board_rect.top - box_h - margin))
-
         btn_h = max(24, int(box_h * 0.92))
+
+        # Prefer above the board; if it doesn't fit, place below the board to avoid overlap.
+        try:
+            win_h = int(self.screen.get_height())
+        except Exception:
+            win_h = int(board_rect.bottom + 100)
+        y_above = int(board_rect.top - btn_h - margin)
+        if y_above >= 6:
+            y = int(y_above)
+        else:
+            y = int(board_rect.bottom + margin)
+            if y + btn_h > win_h - 6:
+                y = max(6, min(int(board_rect.top), win_h - btn_h - 6))
         btn_w = max(88, int(self.size * 1.55))
         gap = max(8, int(self.size * 0.16))
         x0 = int(board_rect.left)
@@ -3189,8 +4578,9 @@ class Engine:
         bg = (20, 20, 20)
         border = (80, 80, 80)
 
-        def draw_btn(label: str, x: int) -> pg.Rect:
-            r = pg.Rect(int(x), int(y), int(btn_w), int(btn_h))
+        def draw_btn(label: str, x: int, w: int | None = None) -> pg.Rect:
+            ww = int(w if w is not None else btn_w)
+            r = pg.Rect(int(x), int(y), int(ww), int(btn_h))
             try:
                 pg.draw.rect(self.screen, bg, r, border_radius=8)
                 pg.draw.rect(self.screen, border, r, width=2, border_radius=8)
@@ -3203,12 +4593,403 @@ class Engine:
                 pass
             return r
 
-        self._undo_btn_rect = draw_btn('Undo', x0)
-        self._resign_btn_rect = draw_btn('Resign', x0 + btn_w + gap)
+        if analysis_only:
+            self._resign_btn_rect = None
+            self._toggle_movelist_btn_rect = None
+            try:
+                # In analysis mode, provide larger buttons so text never clips.
+                pad = max(18, int(self.size * 0.35))
+                w_undo = int(self.font.size('Undo')[0]) + int(pad)
+                w_open = int(self.font.size('Open Saved Analysis')[0]) + int(pad)
+                w_save = int(self.font.size('Save')[0]) + int(pad)
+
+                self._undo_btn_rect = draw_btn('Undo', x0, w=w_undo)
+                x1 = x0 + int(w_undo) + gap
+                self._open_saved_analysis_btn_rect = draw_btn('Open Saved Analysis', x1, w=w_open)
+                x2 = x1 + int(w_open) + gap
+                self._save_analysis_btn_rect = draw_btn('Save', x2, w=w_save)
+            except Exception:
+                # Safe fallbacks.
+                self._undo_btn_rect = draw_btn('Undo', x0)
+                self._open_saved_analysis_btn_rect = None
+                self._save_analysis_btn_rect = None
+        else:
+            self._undo_btn_rect = draw_btn('Undo', x0)
+            try:
+                self._open_saved_analysis_btn_rect = None
+                self._save_analysis_btn_rect = None
+            except Exception:
+                pass
+            self._resign_btn_rect = draw_btn('Resign', x0 + btn_w + gap)
+
+            # Normal game: toggle move list panel.
+            try:
+                label = 'Hide Moves' if bool(getattr(self, 'game_movelist_visible', True)) else 'Show Moves'
+                pad = max(18, int(self.size * 0.35))
+                w_t = int(self.font.size(label)[0]) + int(pad)
+                self._toggle_movelist_btn_rect = draw_btn(label, x0 + (btn_w + gap) * 2, w=w_t)
+            except Exception:
+                self._toggle_movelist_btn_rect = None
+
+    def _game_sans(self) -> list[str]:
+        """Return SAN list for the current main game (cached by ply count)."""
+        try:
+            n = int(len(self.last_move or []))
+        except Exception:
+            n = 0
+        try:
+            if int(getattr(self, '_game_san_cache_n', -1)) == n:
+                return list(getattr(self, '_game_san_cache', []) or [])
+        except Exception:
+            pass
+
+        sans: list[str] = []
+        try:
+            start_fen = str(self.game_fens[0]) if getattr(self, 'game_fens', None) else chess.STARTING_FEN
+        except Exception:
+            start_fen = chess.STARTING_FEN
+
+        try:
+            b = chess.Board(start_fen)
+        except Exception:
+            b = chess.Board()
+
+        for uci in list(self.last_move or []):
+            try:
+                mv = chess.Move.from_uci(str(uci))
+                san = b.san(mv)
+                sans.append(str(san))
+                b.push(mv)
+            except Exception:
+                # Fallback to UCI token if SAN fails.
+                try:
+                    sans.append(str(uci))
+                except Exception:
+                    pass
+                try:
+                    mv = chess.Move.from_uci(str(uci))
+                    if mv in b.legal_moves:
+                        b.push(mv)
+                except Exception:
+                    pass
+
+        self._game_san_cache_n = int(n)
+        self._game_san_cache = list(sans)
+        return list(sans)
+
+    def _game_movelist_rows(self) -> list[str]:
+        """Format current game moves as rows like '1. e4 e5'."""
+        try:
+            start_fen = str(self.game_fens[0]) if getattr(self, 'game_fens', None) else chess.STARTING_FEN
+            b0 = chess.Board(start_fen)
+            start_fullmove = int(b0.fullmove_number)
+            start_turn_white = bool(b0.turn == chess.WHITE)
+        except Exception:
+            start_fullmove = 1
+            start_turn_white = True
+
+        # Always show the full move list; browsing does not delete/hide moves.
+        sans = self._game_sans()
+
+        rows: list[str] = []
+        i = 0
+        move_no = int(start_fullmove)
+        if not start_turn_white and i < len(sans):
+            rows.append(f"{move_no}... {sans[i]}")
+            i += 1
+            move_no += 1
+        while i < len(sans):
+            white = sans[i] if i < len(sans) else ''
+            black = sans[i + 1] if (i + 1) < len(sans) else ''
+            row = f"{move_no}. {white}"
+            if black:
+                row = f"{row} {black}"
+            rows.append(row)
+            i += 2
+            move_no += 1
+        return rows
+
+    def _draw_game_movelist_overlay(self) -> None:
+        """Draw a clickable move list panel for normal gameplay."""
+        # Reset hitboxes every frame.
+        try:
+            self._game_move_hitboxes = []
+        except Exception:
+            pass
+        try:
+            self._game_movelist_panel_rect = None
+        except Exception:
+            pass
+
+        try:
+            if not bool(getattr(self, 'game_movelist_visible', True)):
+                return
+        except Exception:
+            return
+
+        try:
+            win_w, win_h = self.screen.get_size()
+        except Exception:
+            return
+
+        # Fixed 60/40 split: board left 60%, move list in right 40%.
+        board_rect = self._board_rect()
+        gap = 18
+        split_x = int(win_w * 0.60)
+        x = int(split_x + gap)
+        y = int(board_rect.top)
+        w = int(win_w - x - gap)
+        h = int(board_rect.h)
+
+        if w < 220 or h < 140:
+            return
+
+        panel = pg.Rect(int(x), int(y), int(w), int(h))
+        try:
+            self._game_movelist_panel_rect = panel
+        except Exception:
+            pass
+
+        bg = pg.Surface((panel.w, panel.h), pg.SRCALPHA)
+        bg.fill((0, 0, 0, 160))
+        self.screen.blit(bg, (panel.x, panel.y))
+        pg.draw.rect(self.screen, (140, 140, 140), panel, width=1, border_radius=6)
+
+        pad = 10
+        row_h = self.eval_font.get_linesize() + 6
+        xx = int(panel.x + pad)
+        yy = int(panel.y + pad)
+
+        title = self.eval_font.render('Moves:', False, (255, 255, 255))
+        self.screen.blit(title, (xx, yy))
+        yy += int(row_h)
+
+        # Determine which ply should be highlighted.
+        current_ply = -1
+        try:
+            if getattr(self, '_game_browse_active', False) and self._game_browse_index is not None:
+                current_ply = int(self._game_browse_index) - 1
+            else:
+                current_ply = int(len(self.last_move or [])) - 1
+        except Exception:
+            current_ply = -1
+
+        # Build a 2-column move table with ply indices.
+        try:
+            start_fen = str(self.game_fens[0]) if getattr(self, 'game_fens', None) else chess.STARTING_FEN
+            b0 = chess.Board(start_fen)
+            move_no = int(b0.fullmove_number)
+            start_turn_white = bool(b0.turn == chess.WHITE)
+        except Exception:
+            move_no = 1
+            start_turn_white = True
+
+        # Always show the full move list; browsing only changes the highlighted ply.
+        sans = self._game_sans()
+
+        items: list[tuple[str, str, int | None, str, int | None]] = []
+        ply_to_row: dict[int, int] = {}
+
+        ply = 0
+        if not start_turn_white and ply < len(sans):
+            items.append((f"{move_no}...", '', None, str(sans[ply]), int(ply)))
+            ply_to_row[int(ply)] = int(len(items) - 1)
+            ply += 1
+            move_no += 1
+
+        while ply < len(sans):
+            w_san = str(sans[ply]) if ply < len(sans) else ''
+            w_ply = int(ply) if ply < len(sans) else None
+            if w_ply is not None:
+                ply_to_row[int(w_ply)] = int(len(items))
+            ply += 1
+
+            b_san = ''
+            b_ply: int | None = None
+            if ply < len(sans):
+                b_san = str(sans[ply])
+                b_ply = int(ply)
+                ply_to_row[int(b_ply)] = int(len(items))
+                ply += 1
+
+            items.append((f"{move_no}.", w_san, w_ply, b_san, b_ply))
+            move_no += 1
+
+        list_top = int(yy)
+        list_bottom = int(panel.bottom - pad)
+        visible_rows = max(1, int((list_bottom - list_top) // row_h))
+        if visible_rows <= 0:
+            return
+
+        max_start = max(0, len(items) - visible_rows)
+        if current_ply >= 0 and current_ply in ply_to_row:
+            row_idx = int(ply_to_row[int(current_ply)])
+            start = max(0, min(max_start, row_idx - visible_rows + 1))
+        else:
+            start = max_start
+
+        col2 = int(panel.x + (panel.w // 2))
+        try:
+            num_col_w = int(self.eval_font.size('999...')[0]) + 12
+        except Exception:
+            num_col_w = 56
+
+        y_cursor = int(list_top)
+        for row in items[start : start + visible_rows]:
+            if y_cursor + row_h > list_bottom:
+                break
+
+            num_txt, w_txt, w_ply, b_txt, b_ply = row
+            num_surf = self.eval_font.render(str(num_txt), False, (200, 200, 200))
+            self.screen.blit(num_surf, (xx, y_cursor))
+
+            # White move (left half)
+            if w_txt:
+                w_x = int(xx + num_col_w)
+                w_surf = self.eval_font.render(str(w_txt), False, (230, 230, 230))
+                w_rect = pg.Rect(int(w_x - 3), int(y_cursor - 1), int(w_surf.get_width() + 6), int(row_h))
+                if w_ply is not None and int(w_ply) == int(current_ply):
+                    hi = pg.Surface((w_rect.w, w_rect.h), pg.SRCALPHA)
+                    hi.fill((255, 255, 255, 40))
+                    self.screen.blit(hi, (w_rect.x, w_rect.y))
+                self.screen.blit(w_surf, (w_x, y_cursor))
+                try:
+                    if w_ply is not None:
+                        self._game_move_hitboxes.append((w_rect, int(w_ply)))
+                except Exception:
+                    pass
+
+            # Black move (right half)
+            if b_txt:
+                b_x = int(col2)
+                b_surf = self.eval_font.render(str(b_txt), False, (230, 230, 230))
+                b_rect = pg.Rect(int(b_x - 3), int(y_cursor - 1), int(b_surf.get_width() + 6), int(row_h))
+                if b_ply is not None and int(b_ply) == int(current_ply):
+                    hi = pg.Surface((b_rect.w, b_rect.h), pg.SRCALPHA)
+                    hi.fill((255, 255, 255, 40))
+                    self.screen.blit(hi, (b_rect.x, b_rect.y))
+                self.screen.blit(b_surf, (b_x, y_cursor))
+                try:
+                    if b_ply is not None:
+                        self._game_move_hitboxes.append((b_rect, int(b_ply)))
+                except Exception:
+                    pass
+
+            y_cursor += int(row_h)
+
+    def _handle_game_movelist_click(self, pos: tuple[int, int]) -> bool:
+        """Handle clicks on the normal-game move list (jump to ply)."""
+        if self.review_active or getattr(self, 'analysis_active', False) or self.end_popup_active:
+            return False
+        try:
+            if not bool(getattr(self, 'game_movelist_visible', True)):
+                return False
+        except Exception:
+            return False
+
+        panel = getattr(self, '_game_movelist_panel_rect', None)
+        if panel is None:
+            return False
+        try:
+            if not panel.collidepoint(pos):
+                return False
+        except Exception:
+            return False
+
+        for rect, ply_index in getattr(self, '_game_move_hitboxes', []):
+            try:
+                if rect.collidepoint(pos):
+                    if not getattr(self, '_game_browse_active', False):
+                        self._enter_game_browse()
+                    # game_fens index is ply+1 (index 0 is start position)
+                    self._set_game_browse_index(int(ply_index) + 1, play_sound=True)
+                    return True
+            except Exception:
+                continue
+
+        # Consume clicks inside the panel even if not on a move.
+        return True
+
+    def _open_saved_analysis_menu(self) -> None:
+        """Open the SavedAnalysisMenu (loads analysis JSON from data/analysis)."""
+        try:
+            from src.engine.analysis_menu import SavedAnalysisMenu
+            m = SavedAnalysisMenu(
+                title='Open Saved Analysis',
+                width=self.screen.get_width(),
+                height=self.screen.get_height(),
+                surface=self.screen,
+                parent=self,
+                engine=self,
+                theme=pm.themes.THEME_DARK,
+            )
+            m.run()
+        except Exception:
+            return
 
     def _handle_undo_pressed(self) -> None:
         if self.end_popup_active or self.review_active:
             return
+
+        # Analysis mode: undo deletes the last move in the current line and goes back a position.
+        if getattr(self, 'analysis_active', False):
+            try:
+                if not self.analysis_fens or len(self.analysis_fens) <= 1:
+                    return
+            except Exception:
+                return
+
+            # Remove the move that led to the currently viewed position.
+            try:
+                if int(self.analysis_index) <= 0:
+                    return
+                remove_ply_index = int(self.analysis_index) - 1
+            except Exception:
+                return
+
+            try:
+                self.analysis_plies = list(self.analysis_plies[:remove_ply_index])
+                self.analysis_sans = list(self.analysis_sans[:remove_ply_index])
+                self.analysis_move_labels = list(self.analysis_move_labels[:remove_ply_index])
+                self.analysis_opening_names = list(self.analysis_opening_names[:remove_ply_index])
+                self.analysis_fens = list(self.analysis_fens[: remove_ply_index + 1])
+                self.analysis_index = int(remove_ply_index)
+            except Exception:
+                return
+
+            # Clear any PV/variation overlay state.
+            self._review_analysis_active = False
+            self._review_analysis_base_index = int(self.analysis_index)
+            self._review_analysis_fen = ''
+            self._review_analysis_cursor = 0
+            self._review_variations = {}
+            self._review_variation_fens = {}
+            self._review_variation_ucis = {}
+
+            # Update last-move highlight.
+            try:
+                if self.analysis_index <= 0:
+                    self.last_move = []
+                else:
+                    self.last_move = [str(self.analysis_plies[self.analysis_index - 1].uci())]
+            except Exception:
+                self.last_move = []
+
+            # Reload UI to the new position and refresh eval/PV.
+            try:
+                self._load_fen_into_ui(self.analysis_fens[self.analysis_index])
+            except Exception:
+                pass
+            self.request_eval()
+            self.request_review_pv()
+
+            # Restart async annotations for the shortened line.
+            try:
+                self._start_analysis_annotation_thread(chess.Board(str(self.analysis_fens[0])), list(self.analysis_plies))
+            except Exception:
+                pass
+            return
+
         if getattr(self, '_game_browse_active', False):
             return
 
@@ -3384,6 +5165,13 @@ class Engine:
         except Exception:
             pass
 
+        # If we've returned to the latest position, leave browse mode so the user can play.
+        try:
+            if int(new) >= int(len(self.game_fens) - 1):
+                self._exit_game_browse()
+        except Exception:
+            pass
+
     def click_left(self) -> None:
         """
         Handle left click event. Stores co-ordinates of mouse and sets updates to true to enable drawing of clicked piece.
@@ -3399,17 +5187,26 @@ class Engine:
         :return: None
         """
         try:
-            premove_mode = bool(self.player_vs_ai and self.turn == self._ai_side() and not self.review_active and not self.end_popup_active)
+            premove_mode = bool(
+                self.player_vs_ai
+                and self.turn == self._ai_side()
+                and not self.review_active
+                and not getattr(self, 'analysis_active', False)
+                and not self.end_popup_active
+            )
             active_colour = self._player_side() if premove_mode else self.turn
 
             if not self.flipped:
                 if -1 < self.tx < 8 and -1 < self.ty < 8:
-                    piece = self.board[self.ty][self.tx]
                     virt_pos = None
-                    if piece == ' ' and premove_mode:
+                    if premove_mode:
                         piece = self._virtual_player_piece_at(int(self.ty), int(self.tx))
                         if piece is not None:
                             virt_pos = (int(self.ty), int(self.tx))
+                        else:
+                            piece = self.board[self.ty][self.tx]
+                    else:
+                        piece = self.board[self.ty][self.tx]
                     if piece != ' ' and piece is not None:
                         piece.clicked = True
                         if premove_mode and getattr(piece, 'colour', '')[:1] == active_colour:
@@ -3434,13 +5231,16 @@ class Engine:
             else:
                 if -1 < self.tx < 8 and -1 < self.ty < 8:
                     rr, cc = (-self.ty + 7), (-self.tx + 7)
-                    piece = self.board[rr][cc]
                     virt_pos = None
-                    if piece == ' ' and premove_mode:
+                    if premove_mode:
                         # Mouse is over the virtual square in flipped coords.
                         piece = self._virtual_player_piece_at(int(rr), int(cc))
                         if piece is not None:
                             virt_pos = (int(rr), int(cc))
+                        else:
+                            piece = self.board[rr][cc]
+                    else:
+                        piece = self.board[rr][cc]
                     if piece != ' ' and piece is not None:
                         piece.clicked = True
                         if premove_mode and getattr(piece, 'colour', '')[:1] == active_colour:
@@ -3509,7 +5309,12 @@ class Engine:
                     self.screen.blit(surface,
                                      (self.offset[0] + self.size * col_new, self.offset[1] + self.size * row_new))
                 else:
-                    if (row, col) in self.highlighted or (row, col) in self._premove_squares:
+                    premove_sq = False
+                    try:
+                        premove_sq = (row, col) in self._premove_squares and (not self.review_active) and (not getattr(self, 'analysis_active', False))
+                    except Exception:
+                        premove_sq = False
+                    if (row, col) in self.highlighted or premove_sq:
                         surface.fill(self.colours4[count % 2])
                         self.screen.blit(surface,
                                          (self.offset[0] + self.size * col_new, self.offset[1] + self.size * row_new))
@@ -3582,7 +5387,9 @@ class Engine:
 
         # Board resize handle (bottom-right). Kept subtle and within the board.
         try:
-            if not self.review_active and not self.end_popup_active:
+            # The start menu runs in its own blocking loop, so during actual gameplay/review/analysis
+            # this should always be available unless an end popup is active.
+            if not self.end_popup_active:
                 br = self._board_rect()
                 hs = max(11, int(self.size * 0.22))
                 grip = pg.Rect(br.right - hs, br.bottom - hs, hs, hs)
@@ -3606,6 +5413,8 @@ class Engine:
                     # highlight line (slightly inset)
                     pg.draw.line(surf, light, (grip.w - 2 - off, grip.h - 2), (grip.w - 2, grip.h - 2 - off), width=1)
                 self.screen.blit(surf, (grip.x, grip.y))
+            else:
+                self._board_resize_handle_rect = None
         except Exception:
             pass
 
@@ -3733,11 +5542,11 @@ class Engine:
         win_w, win_h = self.screen.get_size()
         board_rect = pg.Rect(int(self.offset[0]), int(self.offset[1]), int(self.size * 8), int(self.size * 8))
 
-        margin = 18
-        x = board_rect.right + margin
-        y = board_rect.top
-        w = win_w - x - margin
-        h = board_rect.h
+        margin = 14
+        x = int(win_w * 0.60) + margin
+        y = int(board_rect.top)
+        w = max(180, int(win_w * 0.40) - (margin * 2))
+        h = int(board_rect.h)
         # Fallback if the window is too narrow.
         if w < 220:
             x = margin
@@ -3761,6 +5570,21 @@ class Engine:
             f"Review: {name}",
             f"Ply: {ply}/{total} (Left/Right, ESC exits)",
         ]
+
+        # Show opening name when the last played move is a real book move.
+        try:
+            if (not self._review_analysis_active) and self.review_index > 0:
+                i = int(self.review_index) - 1
+                if 0 <= i < len(getattr(self, 'review_move_labels', []) or []) and (self.review_move_labels[i] == 'Book'):
+                    nm = ''
+                    try:
+                        nm = str((getattr(self, 'review_opening_names', []) or [])[i] or '')
+                    except Exception:
+                        nm = ''
+                    if nm:
+                        lines.append(f"Opening: {nm}")
+        except Exception:
+            pass
         if (not self._review_analysis_active) and self.review_show_best_move and self.review_best_move_uci:
             lines.append(f"Best: {self.review_best_move_uci}")
         if self.review_acpl_white is not None and self.review_acpl_black is not None:
@@ -3784,55 +5608,161 @@ class Engine:
             self.screen.blit(surf, (xx, yy))
             yy += line_h
 
+        # Button: enter Analysis mode from the currently displayed position.
+        try:
+            btn_h = max(24, int(line_h + 6))
+            btn_w = max(140, int(min(panel.w - 2 * pad, 220)))
+            btn_rect = pg.Rect(int(xx), int(yy + 2), int(btn_w), int(btn_h))
+            self._review_analyze_btn_rect = btn_rect
+            pg.draw.rect(self.screen, (25, 25, 25), btn_rect, border_radius=8)
+            pg.draw.rect(self.screen, (110, 110, 110), btn_rect, width=1, border_radius=8)
+            lab = self.eval_font.render('Analyze Here', False, (220, 220, 220))
+            self.screen.blit(lab, (btn_rect.x + (btn_rect.w - lab.get_width()) // 2, btn_rect.y + (btn_rect.h - lab.get_height()) // 2))
+            yy = int(btn_rect.bottom + 6)
+        except Exception:
+            self._review_analyze_btn_rect = None
+
         # Top 3 engine lines (PV) for the currently displayed position.
         yy += 6
         pv_title = self.eval_font.render("Top lines:", False, (255, 255, 255))
         self.screen.blit(pv_title, (xx, yy))
         yy += line_h
 
-        pv_lines: list[str] = []
+        # PV rendering (never block; keep old lines while a new request is pending).
+        self._review_pv_hitboxes = []
+        pv_lines: list[dict] = []
         pv_pending = False
         try:
-            # Never block the render loop waiting for Stockfish.
             if self._review_pv_lock.acquire(False):
                 try:
                     pv_lines = list(self.review_pv_lines or [])
                     pv_pending = bool(self.review_pv_pending)
+                    self._review_pv_render_cache = list(pv_lines)
+                    self._review_pv_render_pending = bool(pv_pending)
                 finally:
                     self._review_pv_lock.release()
             else:
-                pv_pending = True
+                pv_lines = list(getattr(self, '_review_pv_render_cache', []) or [])
+                pv_pending = bool(getattr(self, '_review_pv_render_pending', False))
         except Exception:
-            pv_lines = []
-            pv_pending = False
+            pv_lines = list(getattr(self, '_review_pv_render_cache', []) or [])
+            pv_pending = bool(getattr(self, '_review_pv_render_pending', False))
 
-        if pv_pending and not pv_lines:
-            pv_lines = ["Analyzing..."]
+        if not pv_lines and pv_pending:
+            pv_lines = [{"rank": 0, "eval": {"type": "cp", "value": 0}, "moves": ["Analyzing..."], "fens": ['']}]
         if not pv_lines:
-            pv_lines = ["(click board to analyze)"]
+            pv_lines = [{"rank": 0, "eval": {"type": "cp", "value": 0}, "moves": ["(click board to analyze)"], "fens": ['']}]
 
-        # Limit rendering to 3-ish lines.
-        for t in pv_lines[:3]:
-            surf = self.eval_font.render(str(t), False, (200, 220, 255))
-            self.screen.blit(surf, (xx, yy))
-            yy += line_h
+        max_x = panel.right - pad
+        token_gap = 10
+        token_gap_small = 6
 
-        # Variation line (user analysis moves)
-        try:
-            if self._review_analysis_active:
-                base = int(self._review_analysis_base_index)
-                var = self._review_variations.get(base, [])
-                if var:
-                    yy += 2
-                    vtitle = self.eval_font.render("Variation:", False, (255, 255, 255))
-                    self.screen.blit(vtitle, (xx, yy))
-                    yy += line_h
-                    vtxt = ' '.join(var)
-                    vsurf = self.eval_font.render(vtxt, False, (220, 220, 220))
-                    self.screen.blit(vsurf, (xx, yy))
-                    yy += line_h
-        except Exception:
-            pass
+        def draw_tokens_row(
+            x0: int,
+            y0: int,
+            tokens: list[tuple[str, tuple[int, int, int], tuple[dict, int] | None]],
+            max_x_: int,
+        ) -> int:
+            """Draw tokens with wrapping. token = (text,color,(pv_item,move_index)|None). Returns new y."""
+            x = int(x0)
+            y = int(y0)
+            row_h2 = self.eval_font.get_linesize() + 4
+            for txt, col, meta in tokens:
+                try:
+                    surf = self.eval_font.render(str(txt), False, col)
+                except Exception:
+                    continue
+                if x + surf.get_width() > max_x_ and x != int(x0):
+                    x = int(x0)
+                    y += row_h2
+                rect = pg.Rect(x - 2, y - 1, surf.get_width() + 4, row_h2)
+                self.screen.blit(surf, (x, y))
+                if meta:
+                    try:
+                        pv_item, mv_i = meta
+                        self._review_pv_hitboxes.append((rect, pv_item, int(mv_i)))
+                    except Exception:
+                        pass
+                x += surf.get_width() + token_gap
+            return y + row_h2
+
+        # Limit to top 3 lines, but each line can wrap.
+        for item in pv_lines[:3]:
+            if not isinstance(item, dict):
+                continue
+            rank = int(item.get('rank', 0) or 0)
+            eval_d = item.get('eval') if isinstance(item.get('eval'), dict) else {"type": "cp", "value": 0}
+            moves = item.get('moves') if isinstance(item.get('moves'), list) else []
+            fens = item.get('fens') if isinstance(item.get('fens'), list) else []
+            ucis = item.get('uci') if isinstance(item.get('uci'), list) else []
+
+            # Prefix: "1." and eval rectangle.
+            x = int(xx)
+            y_line = int(yy)
+
+            if rank > 0:
+                pfx = self.eval_font.render(f"{rank}.", False, (200, 220, 255))
+                self.screen.blit(pfx, (x, y_line))
+                x += pfx.get_width() + token_gap_small
+
+            score_txt = self._format_eval_short(eval_d)
+            side = self._eval_side_for_rect(eval_d)
+            if side == 'w':
+                box_bg = (230, 230, 230)
+                box_fg = (0, 0, 0)
+                box_bd = (180, 180, 180)
+            elif side == 'b':
+                box_bg = (25, 25, 25)
+                box_fg = (245, 245, 245)
+                box_bd = (110, 110, 110)
+            else:
+                box_bg = (140, 140, 140)
+                box_fg = (0, 0, 0)
+                box_bd = (180, 180, 180)
+
+            score_surf = self.eval_font.render(str(score_txt), False, box_fg)
+            box_pad_x = 8
+            box_pad_y = 4
+            box_rect = pg.Rect(x, y_line - 1, score_surf.get_width() + box_pad_x * 2, score_surf.get_height() + box_pad_y)
+            try:
+                pg.draw.rect(self.screen, box_bg, box_rect, border_radius=6)
+                pg.draw.rect(self.screen, box_bd, box_rect, width=1, border_radius=6)
+            except Exception:
+                pass
+            self.screen.blit(score_surf, (box_rect.x + box_pad_x, box_rect.y + (box_rect.h - score_surf.get_height()) // 2))
+            x = box_rect.right + token_gap
+
+            # Moves (clickable): each SAN token jumps to the resulting FEN after that ply.
+            tokens: list[tuple[str, tuple[int, int, int], tuple[dict, int] | None]] = []
+            for j, san in enumerate(moves):
+                # Only make tokens clickable if we have a valid resulting fen.
+                fen_to = ''
+                try:
+                    fen_to = str(fens[j]) if 0 <= j < len(fens) else ''
+                except Exception:
+                    fen_to = ''
+                _ = ucis  # (kept for potential future UI, but we use stored pv_item)
+                tokens.append((str(san), (220, 220, 220), (item, int(j)) if fen_to else None))
+
+            # Draw tokens with wrapping. Use per-token spacing rather than joining into one string.
+            if tokens:
+                # First row continues after eval; subsequent rows align under the moves column.
+                y_after = draw_tokens_row(x, y_line, tokens, int(max_x))
+                yy = int(y_after)
+            else:
+                yy += line_h
+
+            # Extra spacing between PV lines.
+            yy += 2
+
+        # While pending, show a subtle status without clearing the lines.
+        if pv_pending:
+            try:
+                status = self.eval_font.render("(analyzing...)" , False, (160, 180, 200))
+                self.screen.blit(status, (xx, yy))
+                yy += line_h
+            except Exception:
+                pass
 
         yy += 8
         title = self.eval_font.render("Moves:", False, (255, 255, 255))
@@ -3874,17 +5804,47 @@ class Engine:
         col2 = panel.x + (panel.w // 2)
         move_idx_at_pos = self.review_index - 1  # last move played to reach current position
         self._review_move_hitboxes = []
+        self._review_variation_hitboxes = []
+        self._review_variation_delete_hitboxes = []
 
-        for row in range(visible_rows):
-            fm = row + 1 + self.review_move_scroll
-            if fm > fullmove_count:
-                break
+        # Determine variation content to show under its anchor move.
+        # - If actively viewing a variation, show that base and highlight the cursor.
+        # - Otherwise, show any saved variation for the currently selected mainline ply.
+        var_base = -1
+        var_cursor_active = 0
+        var_sans: list[str] = []
+        var_fens: list[str] = []
+        try:
+            if self._review_analysis_active:
+                var_base = int(self._review_analysis_base_index)
+                var_cursor_active = int(getattr(self, '_review_analysis_cursor', 0) or 0)
+            else:
+                var_base = int(self.review_index)
+                var_cursor_active = 0
+            var_sans = list(self._review_variations.get(var_base, []) or [])
+            var_fens = list(self._review_variation_fens.get(var_base, []) or [])
+        except Exception:
+            var_base = -1
+            var_cursor_active = 0
+            var_sans = []
+            var_fens = []
+
+        # Anchor ply is the last move that led to base position.
+        # If base is 0 (start position), anchor under move 1.
+        try:
+            anchor_ply = 1 if var_base <= 0 else int(var_base)
+        except Exception:
+            anchor_ply = 1
+
+        y_cursor = int(list_top)
+        fm = 1 + int(self.review_move_scroll)
+        while fm <= fullmove_count and (y_cursor + row_h) <= int(list_bottom):
             w_i = 2 * (fm - 1)
             b_i = w_i + 1
             w_san = sans[w_i] if w_i < len(sans) else ''
             b_san = sans[b_i] if b_i < len(sans) else ''
 
-            y_row = list_top + row * row_h
+            y_row = int(y_cursor)
             num = self.eval_font.render(f"{fm}.", False, (200, 200, 200))
             self.screen.blit(num, (xx, y_row))
 
@@ -3913,6 +5873,75 @@ class Engine:
                     self.screen.blit(hi, (b_rect.x, b_rect.y))
                 self.screen.blit(b_surf, (b_x, y_row))
                 self._review_move_hitboxes.append((b_rect, b_i + 1))
+
+            y_cursor += int(row_h)
+
+            # Insert the active variation line under the move where the branch starts.
+            try:
+                if var_base >= 0 and var_sans and (int(anchor_ply) in (w_i + 1, b_i + 1)) and (y_cursor < int(list_bottom)):
+                    # Prefix "Var:" and indent.
+                    prefix = self.eval_font.render("Var:", False, (180, 180, 180))
+                    x0 = int(xx + 14)
+                    y0 = int(y_cursor)
+                    self.screen.blit(prefix, (x0, y0))
+                    y = int(y0)
+                    max_x2 = int(panel.right - pad)
+                    row_h2 = self.eval_font.get_linesize() + 4
+
+                    # Small delete button next to the variation.
+                    x = int(x0 + prefix.get_width() + 10)
+                    try:
+                        del_surf = self.eval_font.render('x', False, (255, 140, 140))
+                        del_rect = pg.Rect(int(x), int(y - 1), int(del_surf.get_width() + 10), int(row_h2))
+                        pg.draw.rect(self.screen, (25, 25, 25), del_rect, border_radius=6)
+                        pg.draw.rect(self.screen, (110, 110, 110), del_rect, width=1, border_radius=6)
+                        self.screen.blit(del_surf, (del_rect.x + 5, del_rect.y + (del_rect.h - del_surf.get_height()) // 2))
+                        self._review_variation_delete_hitboxes.append((del_rect, int(var_base)))
+                        x = int(del_rect.right + 10)
+                    except Exception:
+                        x = int(x0 + prefix.get_width() + 10)
+
+                    for j, san in enumerate(var_sans):
+                        try:
+                            surf = self.eval_font.render(str(san), False, (220, 220, 220))
+                        except Exception:
+                            continue
+
+                        if x + surf.get_width() > max_x2 and x != int(x0):
+                            x = int(x0)
+                            y += int(row_h2)
+                            # Stop drawing if we'd run out of panel.
+                            if y + int(row_h2) > int(list_bottom):
+                                break
+
+                        rect = pg.Rect(x - 2, y - 1, surf.get_width() + 4, row_h2)
+
+                        # Highlight the current variation move when we're inside the variation.
+                        try:
+                            if bool(getattr(self, '_review_analysis_active', False)) and int(var_cursor_active) == int(j + 1):
+                                hi = pg.Surface((rect.w, rect.h), pg.SRCALPHA)
+                                hi.fill((120, 200, 255, 55))
+                                self.screen.blit(hi, (rect.x, rect.y))
+                        except Exception:
+                            pass
+
+                        self.screen.blit(surf, (x, y))
+
+                        try:
+                            fen_to = str(var_fens[j]) if 0 <= j < len(var_fens) else ''
+                        except Exception:
+                            fen_to = ''
+                        if fen_to:
+                            # cursor index is 1-based into variation.
+                            self._review_variation_hitboxes.append((rect, int(var_base), int(j + 1)))
+
+                        x += surf.get_width() + 10
+
+                    y_cursor = int(y + row_h2)
+            except Exception:
+                pass
+
+            fm += 1
 
         # Store panel rect for click handling.
         self._review_panel_rect = panel
@@ -4013,11 +6042,79 @@ class Engine:
     def _handle_review_click(self, pos: tuple[int, int]) -> None:
         if not self.review_active:
             return False
+        # Analyze current displayed position.
+        try:
+            r = getattr(self, '_review_analyze_btn_rect', None)
+            if r is not None and r.collidepoint(pos):
+                fen = self._review_display_fen()
+                nm = ''
+                try:
+                    nm = str(self.review_name or 'Review')
+                except Exception:
+                    nm = 'Review'
+                self.start_analysis_from_fen(str(fen), name=f"Analysis ({nm})")
+                return True
+        except Exception:
+            pass
+        # Delete user variation (small 'x' next to Var:).
+        for rect, base_index in getattr(self, '_review_variation_delete_hitboxes', []):
+            try:
+                if rect.collidepoint(pos):
+                    self._review_delete_variation(int(base_index))
+                    return True
+            except Exception:
+                pass
+        # PV (top lines) click-to-jump.
+        for rect, pv_item, move_index in getattr(self, '_review_pv_hitboxes', []):
+            if rect.collidepoint(pos):
+                if self._review_append_pv_to_user_variation(pv_item, int(move_index)):
+                    return True
+                self._review_start_pv_variation(pv_item, int(move_index))
+                return True
+        # User "Variation" click-to-jump.
+        for rect, base_index, cursor_index in getattr(self, '_review_variation_hitboxes', []):
+            if rect.collidepoint(pos):
+                self._review_set_variation_cursor(int(base_index), int(cursor_index), play_sound=True)
+                return True
         for rect, ply_index in getattr(self, '_review_move_hitboxes', []):
             if rect.collidepoint(pos):
                 self._review_set_index(int(ply_index), play_sound=True)
                 return True
         return False
+
+    def _review_delete_variation(self, base_index: int) -> None:
+        """Delete the saved user variation for a mainline ply index."""
+        base = int(base_index)
+        try:
+            self._review_variations.pop(base, None)
+        except Exception:
+            pass
+        try:
+            self._review_variation_fens.pop(base, None)
+        except Exception:
+            pass
+        try:
+            self._review_variation_ucis.pop(base, None)
+        except Exception:
+            pass
+
+        # If we were currently viewing that variation, exit back to the mainline position.
+        try:
+            if bool(getattr(self, '_review_analysis_active', False)) and int(getattr(self, '_review_analysis_base_index', -1)) == base:
+                self._review_analysis_active = False
+                self._review_analysis_fen = ''
+                self._review_analysis_cursor = 0
+        except Exception:
+            pass
+
+        # Re-sync to current mainline position.
+        try:
+            if self.review_active and self.review_fens:
+                self._load_fen_into_ui(str(self.review_fens[self.review_index]))
+                self.request_eval()
+                self.request_review_pv()
+        except Exception:
+            pass
 
     def _handle_review_board_click(self, mouse_pos: tuple[int, int]) -> None:
         if not self.review_active:
@@ -4093,7 +6190,10 @@ class Engine:
         if not self._review_analysis_active:
             self._review_analysis_active = True
             self._review_analysis_base_index = int(self.review_index)
+            self._review_analysis_cursor = 0
             self._review_variations[int(self.review_index)] = []
+            self._review_variation_fens[int(self.review_index)] = []
+            self._review_variation_ucis[int(self.review_index)] = []
         try:
             san = board.san(mv)
         except Exception:
@@ -4110,6 +6210,18 @@ class Engine:
         self._review_analysis_fen = new_fen
         try:
             self._review_variations[int(self._review_analysis_base_index)].append(str(san))
+        except Exception:
+            pass
+        try:
+            self._review_variation_fens[int(self._review_analysis_base_index)].append(str(new_fen))
+        except Exception:
+            pass
+        try:
+            self._review_variation_ucis[int(self._review_analysis_base_index)].append(str(mv.uci()))
+        except Exception:
+            pass
+        try:
+            self._review_analysis_cursor = len(self._review_variation_fens.get(int(self._review_analysis_base_index), []))
         except Exception:
             pass
 
@@ -4137,19 +6249,94 @@ class Engine:
     def _ensure_layout(self, force: bool = False) -> None:
         """Ensure the board layout matches the current mode.
 
-        In review mode, shrink and left-align the board so the move list panel fits on the right.
+        In review/analysis mode, shrink and left-align the board so the side panel fits on the right.
         """
         try:
             win_w, win_h = self.screen.get_size()
         except Exception:
             return
 
-        key = (bool(self.review_active), int(win_w), int(win_h), str(self.board_style), bool(self.show_numbers), float(getattr(self, '_board_user_scale', 1.0)))
+        review_like = bool(self.review_active or self.analysis_active)
+        moves_visible = bool((not review_like) and bool(getattr(self, 'game_movelist_visible', True)))
+        key = (
+            bool(review_like),
+            bool(moves_visible),
+            int(win_w),
+            int(win_h),
+            str(self.board_style),
+            bool(self.show_numbers),
+            float(getattr(self, '_board_user_scale', 1.0)),
+        )
         if not force and self._layout_cache_key == key:
             return
         self._layout_cache_key = key
 
-        if not self.review_active:
+        if not review_like:
+            if moves_visible:
+                # Normal play + move list layout:
+                # - Board is centered within the left 60% of the window.
+                # - Move list panel occupies the right 40%.
+                # - Board labels (1-8 / a-h) must never be clipped when enabled.
+                gap = 18
+                board_area_w = int(win_w * 0.60)
+                right_limit = int(board_area_w - gap)
+
+                try:
+                    scale = float(self._board_user_scale)
+                except Exception:
+                    scale = 0.92
+                scale = max(0.45, min(1.0, scale))
+
+                top_reserved = 0
+                left_gutter = 60 if self.show_numbers else 20
+                bottom_gutter = 10
+                base = 1
+                new_size = int(self.size)
+
+                for _ in range(3):
+                    board_available_w = max(120, int(right_limit - left_gutter))
+                    board_available_h = max(120, int(win_h - top_reserved - bottom_gutter - 10))
+                    board_px = int(min(board_available_w, board_available_h))
+                    base = max(1, int(board_px // 8))
+                    new_size = int(max(10, min(base, int(round(base * scale)))))
+
+                    if self.show_numbers:
+                        try:
+                            font_h = int(self.font.get_linesize())
+                        except Exception:
+                            font_h = 18
+                        left_gutter = max(20, int((new_size / 2) + 12))
+                        bottom_gutter = max(10, int((new_size / 2) + font_h + 10))
+                    else:
+                        left_gutter = 20
+                        bottom_gutter = 10
+
+                self._board_base_size = int(base)
+
+                if int(new_size) != int(self.size):
+                    self.size = int(new_size)
+                    try:
+                        self.board_background = pg.image.load('data/img/boards/' + self.board_style).convert()
+                        self.board_background = pg.transform.smoothscale(self.board_background, (self.size * 8, self.size * 8))
+                    except Exception:
+                        pass
+
+                board_w = int(self.size * 8)
+                board_h = int(self.size * 8)
+
+                x0 = int((right_limit - board_w) / 2)
+                x0 = max(int(left_gutter), min(int(x0), int(right_limit - board_w)))
+
+                y_min = 10
+                y_max = int(win_h - bottom_gutter - board_h - 10)
+                if y_max < y_min:
+                    y0 = int(y_min)
+                else:
+                    y0 = int((y_min + y_max) / 2)
+
+                self.offset = [float(x0), float(y0)]
+                return
+
             # Normal play layout (reserve space for clocks + labels).
             try:
                 new_size, new_offset, show_nums, base = self._compute_normal_layout(int(win_w), int(win_h))
@@ -4170,16 +6357,61 @@ class Engine:
             self.offset = [float(new_offset[0]), float(new_offset[1])]
             return
 
-        # Reserve space for the review panel.
-        left_margin = 60 if self.show_numbers else 20
+        # Review/Analysis layout:
+        # - Board is centered within the left 60% of the window.
+        # - Stats panel occupies the right 40%.
+        # - Board labels (1-8 / a-h) must never be clipped when enabled.
         gap = 18
-        right_margin = 18
-        panel_w = int(min(420, max(260, win_w * 0.33)))
+        board_area_w = int(win_w * 0.60)
+        right_limit = int(board_area_w - gap)
 
-        board_available_w = max(120, win_w - left_margin - gap - panel_w - right_margin)
-        board_available_h = max(120, win_h - 40)
-        board_px = int(min(board_available_w, board_available_h))
-        new_size = max(1, board_px // 8)
+        try:
+            scale = float(self._board_user_scale)
+        except Exception:
+            scale = 0.92
+        scale = max(0.45, min(1.0, scale))
+
+        # Reserve top space only in analysis mode (review has no action buttons).
+        analysis_buttons = bool(self.analysis_active and not self.review_active and not self.end_popup_active)
+
+        top_reserved = 0
+        left_gutter = 60 if self.show_numbers else 20
+        bottom_gutter = 10
+        base = 1
+        new_size = int(self.size)
+
+        # A few passes because gutters depend on the final size.
+        for _ in range(3):
+            board_available_w = max(120, int(right_limit - left_gutter))
+            board_available_h = max(120, int(win_h - top_reserved - bottom_gutter - 10))
+            board_px = int(min(board_available_w, board_available_h))
+            base = max(1, int(board_px // 8))
+            new_size = int(max(10, min(base, int(round(base * scale)))))
+
+            # Ensure labels (numbers/letters) remain visible when enabled.
+            if self.show_numbers:
+                try:
+                    font_h = int(self.font.get_linesize())
+                except Exception:
+                    font_h = 18
+                # Numbers are drawn at x = offset_x - size/2.
+                left_gutter = max(20, int((new_size / 2) + 12))
+                # Letters are drawn ~0.5*square below the board.
+                bottom_gutter = max(10, int((new_size / 2) + font_h + 10))
+            else:
+                left_gutter = 20
+                bottom_gutter = 10
+
+            # Mirror the sizing logic in _draw_game_action_buttons.
+            if analysis_buttons:
+                margin_btn = max(8, int(new_size * 0.12))
+                box_h = max(26, int(new_size * 0.55))
+                btn_h = max(24, int(box_h * 0.92))
+                top_reserved = int(btn_h + margin_btn + 10)
+            else:
+                top_reserved = 0
+
+        self._board_base_size = int(base)
 
         if new_size != int(self.size):
             self.size = int(new_size)
@@ -4189,10 +6421,22 @@ class Engine:
             except Exception:
                 pass
 
-        self.offset = [
-            float(left_margin),
-            float(max(10, (win_h - self.size * 8) / 2)),
-        ]
+        board_w = int(self.size * 8)
+        board_h = int(self.size * 8)
+
+        # Center horizontally within the left 60% region (without colliding with label gutter).
+        x0 = int((right_limit - board_w) / 2)
+        x0 = max(int(left_gutter), min(int(x0), int(right_limit - board_w)))
+
+        # Center vertically within the remaining space, keeping top buttons and bottom labels visible.
+        y_min = max(10, int(top_reserved))
+        y_max = int(win_h - bottom_gutter - board_h - 10)
+        if y_max < y_min:
+            y0 = int(y_min)
+        else:
+            y0 = int((y_min + y_max) / 2)
+
+        self.offset = [float(x0), float(y0)]
 
     def _restore_normal_layout(self) -> None:
         """Restore the default (non-review) board layout."""
@@ -4247,9 +6491,13 @@ class Engine:
         self._review_analysis_base_index = int(self.review_index)
         self._review_analysis_fen = ''
         try:
+            self._review_pv_variation_active = False
+        except Exception:
+            pass
+        try:
             with self._review_pv_lock:
-                self.review_pv_lines = []
-                self.review_pv_pending = False
+                # Keep previous PV visible while new PV is computing.
+                self.review_pv_pending = True
         except Exception:
             pass
 
@@ -4272,6 +6520,1350 @@ class Engine:
         else:
             self.review_best_move_uci = ''
             self.review_arrow = None
+
+    def _analysis_scroll_moves(self, delta_rows: int) -> None:
+        try:
+            self.analysis_move_scroll = max(0, int(self.analysis_move_scroll) + int(delta_rows))
+        except Exception:
+            self.analysis_move_scroll = 0
+
+    def start_analysis_new(self) -> None:
+        """Enter analysis mode from the initial position."""
+        # Switching modes: ensure review is fully deactivated so overlays don't stack.
+        try:
+            if getattr(self, 'review_active', False):
+                self.exit_review(return_to_start_menu=False)
+        except Exception:
+            pass
+        self.analysis_last_error = ''
+        self.analysis_active = True
+        self.analysis_path = None
+        self.analysis_name = 'Analysis'
+        self.analysis_last_saved_path = ''
+
+        start_fen = chess.STARTING_FEN
+        self.analysis_fens = [str(start_fen)]
+        self.analysis_plies = []
+        self.analysis_sans = []
+        self.analysis_move_labels = []
+        self.analysis_opening_names = []
+        self.analysis_index = 0
+        self.analysis_move_scroll = 0
+        self.analysis_progress = None
+
+        # Reset any PV/variation overlay state.
+        self._review_analysis_active = False
+        self._review_analysis_base_index = 0
+        self._review_analysis_fen = ''
+        self._review_analysis_cursor = 0
+        self._review_variations = {}
+        self._review_variation_fens = {}
+        self._review_variation_ucis = {}
+
+        try:
+            with self._review_pv_lock:
+                self.review_pv_lines = []
+                self.review_pv_pending = False
+        except Exception:
+            pass
+
+        # Analysis mode does not support premoves.
+        try:
+            self._clear_premove()
+        except Exception:
+            pass
+
+        # Load position.
+        self.last_move = []
+        self._load_fen_into_ui(start_fen)
+        self._ensure_layout(force=True)
+        self.request_eval()
+        self.request_review_pv()
+
+    def start_analysis_from_fen(self, fen: str, name: str | None = None) -> bool:
+        """Enter analysis mode starting from an arbitrary FEN (no moves yet)."""
+        if not fen:
+            return False
+
+        # Switching modes: ensure review is fully deactivated so overlays don't stack.
+        try:
+            if getattr(self, 'review_active', False):
+                self.exit_review(return_to_start_menu=False)
+        except Exception:
+            pass
+
+        # Validate FEN.
+        try:
+            _ = chess.Board(str(fen))
+        except Exception:
+            try:
+                self.analysis_last_error = 'Invalid FEN'
+            except Exception:
+                pass
+            return False
+
+        self.analysis_last_error = ''
+        self.analysis_active = True
+        self.analysis_path = None
+        self.analysis_name = str(name or 'Analysis')
+        self.analysis_last_saved_path = ''
+
+        start_fen = str(fen)
+        self.analysis_fens = [start_fen]
+        self.analysis_plies = []
+        self.analysis_sans = []
+        self.analysis_move_labels = []
+        self.analysis_opening_names = []
+        self.analysis_index = 0
+        self.analysis_move_scroll = 0
+        self.analysis_progress = None
+
+        # Reset any PV/variation overlay state.
+        self._review_analysis_active = False
+        self._review_analysis_base_index = 0
+        self._review_analysis_fen = ''
+        self._review_analysis_cursor = 0
+        self._review_variations = {}
+        self._review_variation_fens = {}
+        self._review_variation_ucis = {}
+
+        try:
+            with self._review_pv_lock:
+                self.review_pv_lines = []
+                self.review_pv_pending = False
+        except Exception:
+            pass
+
+        # Analysis mode does not support premoves.
+        try:
+            self._clear_premove()
+        except Exception:
+            pass
+
+        self.last_move = []
+        self._load_fen_into_ui(start_fen)
+        self._ensure_layout(force=True)
+        self.request_eval()
+        self.request_review_pv()
+        return True
+
+    def start_analysis_from_file(self, path: str) -> bool:
+        """Load a saved analysis file and enter analysis mode."""
+        # Switching modes: ensure review is fully deactivated so overlays don't stack.
+        try:
+            if getattr(self, 'review_active', False):
+                self.exit_review(return_to_start_menu=False)
+        except Exception:
+            pass
+        self.analysis_last_error = ''
+        if not path:
+            self.analysis_last_error = 'No file provided'
+            return False
+        try:
+            import json
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception as e:
+            self.analysis_last_error = f'Could not read file: {str(e).splitlines()[0]}'
+            return False
+
+        if not isinstance(data, dict):
+            self.analysis_last_error = 'Invalid analysis file'
+            return False
+
+        start_fen = str(data.get('start_fen') or chess.STARTING_FEN)
+        moves_uci = data.get('moves_uci') if isinstance(data.get('moves_uci'), list) else []
+        move_labels = data.get('move_labels') if isinstance(data.get('move_labels'), list) else []
+        opening_names = data.get('opening_names') if isinstance(data.get('opening_names'), list) else []
+
+        # Rebuild fens + SAN from UCI moves.
+        try:
+            board = chess.Board(start_fen)
+        except Exception:
+            self.analysis_last_error = 'Invalid start FEN'
+            return False
+
+        fens = [board.fen()]
+        plies: list[chess.Move] = []
+        sans: list[str] = []
+        for u in moves_uci:
+            try:
+                mv = chess.Move.from_uci(str(u))
+                san = board.san(mv)
+                board.push(mv)
+                plies.append(mv)
+                sans.append(str(san))
+                fens.append(board.fen())
+            except Exception:
+                # Stop at first invalid move.
+                break
+
+        self.analysis_active = True
+        self.analysis_path = str(path)
+        self.analysis_name = str(data.get('name') or 'Analysis')
+        self.analysis_last_saved_path = str(path)
+        self.analysis_fens = list(fens)
+        self.analysis_plies = list(plies)
+        self.analysis_sans = list(sans)
+        self.analysis_move_labels = list(move_labels)[: len(self.analysis_sans)]
+        self.analysis_opening_names = list(opening_names)[: len(self.analysis_sans)]
+        # Default to last position.
+        self.analysis_index = len(self.analysis_fens) - 1
+        self.analysis_move_scroll = 0
+        self.analysis_progress = None
+
+        # Reset any variation overlay.
+        self._review_analysis_active = False
+        self._review_analysis_base_index = 0
+        self._review_analysis_fen = ''
+        self._review_analysis_cursor = 0
+        self._review_variations = {}
+        self._review_variation_fens = {}
+        self._review_variation_ucis = {}
+
+        try:
+            with self._review_pv_lock:
+                self.review_pv_lines = []
+                self.review_pv_pending = False
+        except Exception:
+            pass
+
+        # Analysis mode does not support premoves.
+        try:
+            self._clear_premove()
+        except Exception:
+            pass
+
+        # Load UI.
+        try:
+            if self.analysis_index <= 0:
+                self.last_move = []
+            else:
+                self.last_move = [str(self.analysis_plies[self.analysis_index - 1].uci())]
+        except Exception:
+            self.last_move = []
+        self._load_fen_into_ui(self.analysis_fens[self.analysis_index])
+        self._ensure_layout(force=True)
+        self.request_eval()
+        self.request_review_pv()
+
+        # Kick a lightweight re-annotation if missing labels.
+        try:
+            if len(self.analysis_move_labels) != len(self.analysis_sans):
+                self._start_analysis_annotation_thread(chess.Board(start_fen), list(self.analysis_plies))
+        except Exception:
+            pass
+        return True
+
+    def exit_analysis(self, return_to_start_menu: bool = True) -> None:
+        try:
+            self._analysis_run_id += 1
+        except Exception:
+            pass
+        self.analysis_active = False
+        self.analysis_path = None
+        self.analysis_name = ''
+        self.analysis_fens = []
+        self.analysis_plies = []
+        self.analysis_sans = []
+        self.analysis_move_labels = []
+        self.analysis_opening_names = []
+        self.analysis_index = 0
+        self.analysis_move_scroll = 0
+        self.analysis_progress = None
+        self.analysis_last_error = ''
+        self.analysis_last_saved_path = ''
+        self._analysis_move_hitboxes = []
+        self._analysis_pv_hitboxes = []
+        self._analysis_variation_hitboxes = []
+        self._review_analysis_active = False
+        self._review_analysis_base_index = 0
+        self._review_analysis_fen = ''
+        self._review_analysis_cursor = 0
+        self._review_variations = {}
+        self._review_variation_fens = {}
+        self._review_variation_ucis = {}
+        try:
+            self._review_pv_variation_active = False
+            self._review_pv_variation_base_index = 0
+            self._review_pv_variation_fens = []
+            self._review_pv_variation_ucis = []
+            self._review_pv_variation_sans = []
+        except Exception:
+            pass
+        try:
+            with self._review_pv_lock:
+                self.review_pv_lines = []
+                self.review_pv_pending = False
+        except Exception:
+            pass
+
+        # Return to start menu (ESC behavior). When switching modes (e.g. analysis -> review),
+        # callers pass return_to_start_menu=False so we don't reset state mid-transition.
+        if return_to_start_menu:
+            try:
+                self._start_menu_shown = False
+            except Exception:
+                pass
+            self._restore_normal_layout()
+            self.reset_game()
+
+    def save_analysis(self) -> bool:
+        """Save current analysis line to data/analysis as a JSON file."""
+        self.analysis_last_error = ''
+        if not self.analysis_active:
+            return False
+        try:
+            os.makedirs('data/analysis', exist_ok=True)
+        except Exception:
+            pass
+        ts = time.strftime('%Y%m%d_%H%M%S')
+        path = os.path.join('data', 'analysis', f'analysis_{ts}.json')
+
+        try:
+            import json
+            data = {
+                'version': 1,
+                'name': str(self.analysis_name or 'Analysis'),
+                'created': ts,
+                'start_fen': str(self.analysis_fens[0]) if self.analysis_fens else chess.STARTING_FEN,
+                'moves_uci': [str(m.uci()) for m in (self.analysis_plies or [])],
+                'move_labels': list(self.analysis_move_labels or []),
+                'opening_names': list(self.analysis_opening_names or []),
+            }
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False)
+            self.analysis_last_saved_path = str(path)
+            self.analysis_path = str(path)
+            return True
+        except Exception as e:
+            self.analysis_last_error = f'Failed to save: {str(e).splitlines()[0]}'
+            return False
+
+    def analysis_step(self, delta: int) -> None:
+        if not self.analysis_active or not self.analysis_fens:
+            return
+        d = int(delta)
+        if d == 0:
+            return
+
+        # Step through an overlay variation (PV) first.
+        try:
+            if self._review_analysis_active:
+                base = int(self._review_analysis_base_index)
+                cur = int(self._review_analysis_cursor)
+                vfens = self._review_variation_fens.get(base, [])
+                vuci = self._review_variation_ucis.get(base, [])
+
+                if d > 0 and cur < len(vfens):
+                    new_cur = cur + 1
+                    tgt_fen = str(vfens[new_cur - 1])
+                    uci = str(vuci[new_cur - 1]) if 0 <= (new_cur - 1) < len(vuci) else ''
+                    fen_before = ''
+                    if new_cur == 1:
+                        fen_before = str(self.analysis_fens[base]) if 0 <= base < len(self.analysis_fens) else ''
+                    else:
+                        fen_before = str(vfens[new_cur - 2])
+                    if uci:
+                        try:
+                            self.last_move = [uci]
+                        except Exception:
+                            self.last_move = []
+                        try:
+                            self._play_sound_for_move_from_fen(str(fen_before), chess.Move.from_uci(str(uci)))
+                        except Exception:
+                            pass
+                    self._review_analysis_cursor = int(new_cur)
+                    self._review_analysis_fen = ''
+                    self._load_fen_into_ui(tgt_fen)
+                    self.request_eval()
+                    self.request_review_pv()
+                    return
+
+                if d < 0 and cur > 0:
+                    new_cur = cur - 1
+                    self._review_analysis_cursor = int(new_cur)
+                    self._review_analysis_fen = ''
+                    if new_cur == 0:
+                        # Back to base position in analysis mainline.
+                        try:
+                            if base <= 0:
+                                self.last_move = []
+                            else:
+                                self.last_move = [str(self.analysis_plies[base - 1].uci())]
+                        except Exception:
+                            self.last_move = []
+                        self._load_fen_into_ui(str(self.analysis_fens[base]))
+                    else:
+                        tgt_fen = str(vfens[new_cur - 1])
+                        uci = str(vuci[new_cur - 1]) if 0 <= (new_cur - 1) < len(vuci) else ''
+                        try:
+                            self.last_move = [uci] if uci else []
+                        except Exception:
+                            self.last_move = []
+                        self._load_fen_into_ui(tgt_fen)
+                    self.request_eval()
+                    self.request_review_pv()
+                    return
+        except Exception:
+            pass
+
+        new_idx = self.analysis_index + d
+        self._analysis_set_index(new_idx, play_sound=True)
+
+    def _analysis_set_index(self, new_idx: int, play_sound: bool = False) -> None:
+        if not self.analysis_active or not self.analysis_fens:
+            return
+        prev = int(self.analysis_index)
+        new_idx = max(0, min(len(self.analysis_fens) - 1, int(new_idx)))
+        if new_idx == prev:
+            return
+        if play_sound:
+            try:
+                # Similar to review: contextual sound on +1, else generic.
+                if new_idx == prev + 1 and 0 <= prev < len(self.analysis_plies):
+                    fen_before = self.analysis_fens[prev]
+                    board = chess.Board(fen_before)
+                    mv = self.analysis_plies[prev]
+                    self._play_sound_for_move_from_fen(str(fen_before), mv)
+                else:
+                    pg.mixer.music.load('data/sounds/move.mp3')
+                    pg.mixer.music.play(1)
+            except Exception:
+                pass
+        self.analysis_index = int(new_idx)
+
+        # Leaving overlay variation when navigating the mainline.
+        self._review_analysis_active = False
+        self._review_analysis_base_index = int(self.analysis_index)
+        self._review_analysis_fen = ''
+        self._review_analysis_cursor = 0
+
+        try:
+            if self.analysis_index <= 0:
+                self.last_move = []
+            else:
+                self.last_move = [str(self.analysis_plies[self.analysis_index - 1].uci())]
+        except Exception:
+            self.last_move = []
+
+        self._load_fen_into_ui(self.analysis_fens[self.analysis_index])
+        self.request_eval()
+        self.request_review_pv()
+
+    def _analysis_display_fen(self) -> str:
+        if self._review_analysis_active:
+            try:
+                base = int(self._review_analysis_base_index)
+                cur = int(self._review_analysis_cursor)
+                vfens = self._review_variation_fens.get(base, [])
+                if cur > 0 and 0 <= (cur - 1) < len(vfens):
+                    return str(vfens[cur - 1])
+            except Exception:
+                pass
+            return self._review_analysis_fen or (self.analysis_fens[self.analysis_index] if self.analysis_fens else '')
+        return self.analysis_fens[self.analysis_index] if self.analysis_fens else ''
+
+    def _handle_analysis_click(self, pos: tuple[int, int]) -> bool:
+        if not self.analysis_active:
+            return False
+        for rect, pv_item, move_index in getattr(self, '_analysis_pv_hitboxes', []):
+            if rect.collidepoint(pos):
+                self._analysis_start_pv_variation(pv_item, int(move_index))
+                return True
+        for rect, base_index, cursor_index in getattr(self, '_analysis_variation_hitboxes', []):
+            if rect.collidepoint(pos):
+                self._analysis_set_variation_cursor(int(base_index), int(cursor_index), play_sound=True)
+                return True
+        for rect, ply_index in getattr(self, '_analysis_move_hitboxes', []):
+            if rect.collidepoint(pos):
+                self._analysis_set_index(int(ply_index), play_sound=True)
+                return True
+        return False
+
+    def _analysis_set_variation_cursor(self, base_index: int, cursor: int, play_sound: bool = True) -> None:
+        """Analysis-mode wrapper around the variation cursor setter."""
+        # Reuse the existing implementation, but ensure it uses analysis mainline for base_fen.
+        base = int(base_index)
+        cur = int(cursor)
+        vfens = self._review_variation_fens.get(base, [])
+        vucis = self._review_variation_ucis.get(base, [])
+
+        if cur < 0:
+            cur = 0
+        if cur > len(vfens):
+            cur = len(vfens)
+
+        self._review_analysis_active = True
+        self._review_analysis_base_index = int(base)
+        self._review_analysis_cursor = int(cur)
+        self._review_analysis_fen = ''
+
+        if cur == 0:
+            tgt_fen = ''
+            try:
+                tgt_fen = str(self.analysis_fens[base]) if 0 <= base < len(self.analysis_fens) else ''
+            except Exception:
+                tgt_fen = ''
+            if not tgt_fen:
+                return
+            try:
+                self.last_move = [] if base <= 0 else [str(self.analysis_plies[base - 1].uci())]
+            except Exception:
+                self.last_move = []
+            self._load_fen_into_ui(tgt_fen)
+            self.request_eval()
+            self.request_review_pv()
+            return
+
+        tgt_fen = ''
+        try:
+            tgt_fen = str(vfens[cur - 1])
+        except Exception:
+            tgt_fen = ''
+        if not tgt_fen:
+            return
+
+        uci = ''
+        try:
+            uci = str(vucis[cur - 1]) if 0 <= (cur - 1) < len(vucis) else ''
+        except Exception:
+            uci = ''
+
+        if uci:
+            try:
+                self.last_move = [uci]
+            except Exception:
+                self.last_move = []
+            if play_sound:
+                try:
+                    mv = chess.Move.from_uci(str(uci))
+                    if cur == 1:
+                        fen_before = str(self.analysis_fens[base]) if 0 <= base < len(self.analysis_fens) else ''
+                    else:
+                        fen_before = str(vfens[cur - 2])
+                    if fen_before:
+                        self._play_sound_for_move_from_fen(str(fen_before), mv)
+                except Exception:
+                    pass
+        else:
+            try:
+                self.last_move = []
+            except Exception:
+                pass
+
+        self._load_fen_into_ui(tgt_fen)
+        self.request_eval()
+        self.request_review_pv()
+
+    def _analysis_start_pv_variation(self, pv_item: dict, move_index: int) -> None:
+        if not self.analysis_active:
+            return
+        if not isinstance(pv_item, dict):
+            return
+        base_fen = self._analysis_display_fen()
+        if not base_fen:
+            return
+
+        base = int(self.analysis_index)
+        uci_list = pv_item.get('uci') if isinstance(pv_item.get('uci'), list) else []
+        san_list = pv_item.get('moves') if isinstance(pv_item.get('moves'), list) else []
+        fen_list = pv_item.get('fens') if isinstance(pv_item.get('fens'), list) else []
+        try:
+            uci_list = [str(x) for x in uci_list]
+            san_list = [str(x) for x in san_list]
+            fen_list = [str(x) for x in fen_list]
+        except Exception:
+            uci_list, san_list, fen_list = [], [], []
+        if not fen_list:
+            return
+
+        self._review_analysis_active = True
+        self._review_analysis_base_index = int(base)
+        self._review_analysis_fen = ''
+        self._review_analysis_cursor = max(1, min(int(move_index) + 1, len(fen_list)))
+        self._review_variations[int(base)] = list(san_list)
+        self._review_variation_fens[int(base)] = list(fen_list)
+        self._review_variation_ucis[int(base)] = list(uci_list)
+
+        tgt_fen = str(fen_list[self._review_analysis_cursor - 1])
+        uci = ''
+        try:
+            uci = str(uci_list[self._review_analysis_cursor - 1])
+        except Exception:
+            uci = ''
+        if uci:
+            try:
+                self.last_move = [uci]
+            except Exception:
+                self.last_move = []
+            try:
+                mv = chess.Move.from_uci(str(uci))
+                if self._review_analysis_cursor == 1:
+                    fen_before = base_fen
+                else:
+                    fen_before = str(fen_list[self._review_analysis_cursor - 2])
+                self._play_sound_for_move_from_fen(str(fen_before), mv)
+            except Exception:
+                pass
+
+        self._load_fen_into_ui(tgt_fen)
+        self.request_eval()
+        self.request_review_pv()
+
+    def _handle_analysis_board_click(self, mouse_pos: tuple[int, int]) -> None:
+        if not self.analysis_active:
+            return
+        if not self.movement_click_enabled:
+            return
+
+        target = self._mouse_to_square(mouse_pos)
+        if target is None:
+            self.selected_square = None
+            return
+        target_row, target_col = target
+
+        fen = self._analysis_display_fen()
+        if not fen:
+            self.selected_square = None
+            return
+
+        try:
+            board = chess.Board(fen)
+        except Exception:
+            self.selected_square = None
+            return
+
+        # In analysis mode we still follow side-to-move, but click-to-move should feel like
+        # the main game: you can switch selection by clicking another own piece.
+        try:
+            clicked_sq = self._chess_square_from_coords(target_row, target_col)
+            clicked_piece = board.piece_at(clicked_sq)
+        except Exception:
+            clicked_piece = None
+
+        if self.selected_square is None:
+            try:
+                if clicked_piece is None:
+                    self.selected_square = None
+                    return
+                if clicked_piece.color != board.turn:
+                    self.selected_square = None
+                    return
+                self.selected_square = (target_row, target_col)
+                return
+            except Exception:
+                self.selected_square = None
+                return
+
+        sel_row, sel_col = self.selected_square
+        if (sel_row, sel_col) == (target_row, target_col):
+            self.selected_square = None
+            return
+
+        # Clicking another own piece switches selection (like the main game).
+        try:
+            if clicked_piece is not None and clicked_piece.color == board.turn:
+                self.selected_square = (target_row, target_col)
+                return
+        except Exception:
+            pass
+
+        try:
+            from_sq = self._chess_square_from_coords(sel_row, sel_col)
+            to_sq = self._chess_square_from_coords(target_row, target_col)
+        except Exception:
+            self.selected_square = None
+            return
+
+        promo = None
+        try:
+            p = board.piece_at(from_sq)
+            if p is not None and p.piece_type == chess.PAWN:
+                to_rank = chess.square_rank(to_sq)
+                if (p.color == chess.WHITE and to_rank == 7) or (p.color == chess.BLACK and to_rank == 0):
+                    promo = chess.QUEEN
+        except Exception:
+            promo = None
+
+        mv = chess.Move(from_sq, to_sq, promotion=promo)
+        if mv not in board.legal_moves:
+            # Keep selection so the user can try another destination.
+            return
+
+        # If user is browsing earlier in the line, truncate forward moves.
+        try:
+            if self.analysis_index < len(self.analysis_fens) - 1:
+                self.analysis_fens = self.analysis_fens[: self.analysis_index + 1]
+                self.analysis_plies = self.analysis_plies[: self.analysis_index]
+                self.analysis_sans = self.analysis_sans[: self.analysis_index]
+                self.analysis_move_labels = self.analysis_move_labels[: self.analysis_index]
+                self.analysis_opening_names = self.analysis_opening_names[: self.analysis_index]
+        except Exception:
+            pass
+
+        fen_before = fen
+        try:
+            san = board.san(mv)
+        except Exception:
+            san = mv.uci()
+        try:
+            board.push(mv)
+        except Exception:
+            self.selected_square = None
+            return
+        new_fen = board.fen()
+
+        try:
+            self.analysis_plies.append(mv)
+            self.analysis_sans.append(str(san))
+            self.analysis_fens.append(str(new_fen))
+            self.analysis_index = len(self.analysis_fens) - 1
+        except Exception:
+            pass
+
+        # Clear overlay variation when extending the mainline.
+        self._review_analysis_active = False
+        self._review_analysis_base_index = int(self.analysis_index)
+        self._review_analysis_fen = ''
+        self._review_analysis_cursor = 0
+
+        # UI update
+        try:
+            self.last_move = [str(mv.uci())]
+        except Exception:
+            self.last_move = []
+        self._load_fen_into_ui(new_fen)
+        self.request_eval()
+        self.request_review_pv()
+        try:
+            self._play_sound_for_move_from_fen(fen_before, mv)
+        except Exception:
+            pass
+
+        # Start (or restart) async annotations.
+        try:
+            self._start_analysis_annotation_thread(chess.Board(str(self.analysis_fens[0])), list(self.analysis_plies))
+        except Exception:
+            pass
+
+        self.selected_square = None
+
+    def _handle_analysis_drag_release(self, mouse_pos: tuple[int, int]) -> None:
+        # Proper drag/drop handler (mirrors main-game semantics).
+        try:
+            self._un_click_left_analysis()
+        except Exception:
+            # Fall back to click-to-move if anything goes wrong.
+            try:
+                self.selected_square = None
+            except Exception:
+                pass
+            self._handle_analysis_board_click(mouse_pos)
+
+    def _un_click_left_analysis(self) -> None:
+        """Drag-release handler for analysis mode.
+
+        Mirrors the main-game drag behavior (piece clamps to cursor) and records the move
+        into the analysis mainline.
+        """
+        if not self.analysis_active:
+            return
+
+        fen_before = self._analysis_display_fen()
+        if not fen_before:
+            # Ensure we stop dragging.
+            for piece in self.all_pieces:
+                try:
+                    piece.clicked = False
+                except Exception:
+                    pass
+            return
+
+        # Find the clicked piece (set by update_board once drag threshold is exceeded).
+        moved_piece = None
+        for piece in self.all_pieces:
+            try:
+                if piece.clicked:
+                    moved_piece = piece
+                    break
+            except Exception:
+                continue
+        if moved_piece is None:
+            return
+
+        # Attempt to apply move using piece.make_move (same as main game).
+        row = int(moved_piece.position[0])
+        col = int(moved_piece.position[1])
+        ok = False
+        try:
+            ok = bool(moved_piece.make_move(self.board, self.offset, self.turn, self.flipped, None, None))
+        except Exception:
+            ok = False
+
+        # Compute destination square from current mouse position (same logic as un_click_left).
+        try:
+            x = int((pg.mouse.get_pos()[0] - self.offset[0]) // self.size)
+            y = int((pg.mouse.get_pos()[1] - self.offset[1]) // self.size)
+            if self.flipped:
+                x = -x + 7
+                y = -y + 7
+        except Exception:
+            x, y = col, row
+
+        # Always stop dragging visuals.
+        try:
+            moved_piece.clicked = False
+        except Exception:
+            pass
+
+        if not ok:
+            # Re-sync UI to the original position.
+            self._load_fen_into_ui(fen_before)
+            self.selected_square = None
+            return
+
+        # Build UCI (auto-promote to queen like main game)
+        uci = translate_move(row, col, y, x)
+        try:
+            if moved_piece.piece.lower() == 'p' and (y == 0 or y == 7):
+                uci += 'q'
+        except Exception:
+            pass
+
+        # Validate/apply via python-chess to derive SAN and new FEN.
+        try:
+            b = chess.Board(fen_before)
+        except Exception:
+            self._load_fen_into_ui(fen_before)
+            self.selected_square = None
+            return
+
+        try:
+            mv = chess.Move.from_uci(str(uci))
+            if mv not in b.legal_moves:
+                raise ValueError('illegal')
+            san = b.san(mv)
+            b.push(mv)
+        except Exception:
+            self._load_fen_into_ui(fen_before)
+            self.selected_square = None
+            return
+
+        # If user is browsing earlier in the line, truncate forward moves.
+        try:
+            if self.analysis_index < len(self.analysis_fens) - 1:
+                self.analysis_fens = self.analysis_fens[: self.analysis_index + 1]
+                self.analysis_plies = self.analysis_plies[: self.analysis_index]
+                self.analysis_sans = self.analysis_sans[: self.analysis_index]
+                self.analysis_move_labels = self.analysis_move_labels[: self.analysis_index]
+                self.analysis_opening_names = self.analysis_opening_names[: self.analysis_index]
+        except Exception:
+            pass
+
+        new_fen = b.fen()
+        try:
+            self.analysis_plies.append(mv)
+            self.analysis_sans.append(str(san))
+            self.analysis_fens.append(str(new_fen))
+            self.analysis_index = len(self.analysis_fens) - 1
+        except Exception:
+            pass
+
+        # Clear PV/variation overlay when extending the mainline.
+        self._review_analysis_active = False
+        self._review_analysis_base_index = int(self.analysis_index)
+        self._review_analysis_fen = ''
+        self._review_analysis_cursor = 0
+        self._review_variations = {}
+        self._review_variation_fens = {}
+        self._review_variation_ucis = {}
+
+        # UI update
+        try:
+            self.last_move = [str(mv.uci())]
+        except Exception:
+            self.last_move = []
+        self._load_fen_into_ui(new_fen)
+        self.request_eval()
+        self.request_review_pv()
+        try:
+            self._play_sound_for_move_from_fen(fen_before, mv)
+        except Exception:
+            pass
+
+        # Start (or restart) async annotations.
+        try:
+            self._start_analysis_annotation_thread(chess.Board(str(self.analysis_fens[0])), list(self.analysis_plies))
+        except Exception:
+            pass
+
+        self.selected_square = None
+
+    def _start_analysis_annotation_thread(self, start_board: chess.Board, moves: list[chess.Move]) -> None:
+        if not self._ensure_review_analysis_engine() or self.stockfish_review_analysis is None:
+            self.analysis_progress = None
+            return
+
+        try:
+            self._analysis_run_id += 1
+            run_id = int(self._analysis_run_id)
+        except Exception:
+            run_id = 0
+
+        def eval_to_cp(e) -> int:
+            if not isinstance(e, dict):
+                return 0
+            if e.get('type') == 'cp':
+                try:
+                    return int(e.get('value', 0))
+                except Exception:
+                    return 0
+            try:
+                mv = int(e.get('value', 0))
+            except Exception:
+                mv = 0
+            return 10000 if mv > 0 else -10000
+
+        def loss_unclamped(cp: int, cap: int = 2000) -> int:
+            try:
+                return max(0, min(int(cp), int(cap)))
+            except Exception:
+                return 0
+
+        def classify_move(side_to_move_white: bool, before_eval: int, played_eval: int, best_eval: int, played_uci: str, best_uci: str | None) -> str:
+            if side_to_move_white:
+                loss = loss_unclamped(best_eval - played_eval)
+                gain = played_eval - before_eval
+                abs_before = abs(before_eval)
+            else:
+                loss = loss_unclamped(played_eval - best_eval)
+                gain = before_eval - played_eval
+                abs_before = abs(before_eval)
+
+            if best_uci and str(played_uci) == str(best_uci):
+                return 'Best'
+            if loss <= 10 and gain >= 180 and abs_before <= 250:
+                return 'Amazing'
+            if loss <= 25 and gain >= 100 and abs_before <= 300:
+                return 'Great'
+            if loss <= 15:
+                return 'Good'
+            if loss >= 250:
+                return 'Blunder'
+            if loss >= 120:
+                return 'Mistake'
+            return ''
+
+        def worker() -> None:
+            try:
+                with self._review_analysis_engine_lock:
+                    self.stockfish_review_analysis.update_engine_parameters({"UCI_LimitStrength": "false"})
+                    self.stockfish_review_analysis.set_skill_level(20)
+                    self.stockfish_review_analysis.set_depth(10)
+            except Exception:
+                pass
+
+            board = start_board.copy(stack=False)
+            labels: list[str] = []
+            total = max(1, len(moves))
+
+            try:
+                opening_names = self._compute_review_openings(start_board, moves)
+            except Exception:
+                opening_names = ['' for _ in moves]
+
+            for i, mv in enumerate(moves):
+                try:
+                    if (not self.analysis_active) or int(self._analysis_run_id) != int(run_id):
+                        return
+                except Exception:
+                    return
+
+                fen_before = board.fen()
+                try:
+                    with self._review_analysis_engine_lock:
+                        self.stockfish_review_analysis.set_fen_position(fen_before)
+                        before_eval = eval_to_cp(self.stockfish_review_analysis.get_evaluation())
+                        best_uci = self.stockfish_review_analysis.get_best_move_time(80)
+                except Exception:
+                    before_eval = 0
+                    best_uci = None
+
+                played_board = chess.Board(fen_before)
+                try:
+                    played_board.push(mv)
+                except Exception:
+                    pass
+                try:
+                    with self._review_analysis_engine_lock:
+                        self.stockfish_review_analysis.set_fen_position(played_board.fen())
+                        played_eval = eval_to_cp(self.stockfish_review_analysis.get_evaluation())
+                except Exception:
+                    played_eval = 0
+
+                best_eval = played_eval
+                if best_uci:
+                    best_board = chess.Board(fen_before)
+                    try:
+                        best_board.push_uci(str(best_uci))
+                    except Exception:
+                        pass
+                    try:
+                        with self._review_analysis_engine_lock:
+                            self.stockfish_review_analysis.set_fen_position(best_board.fen())
+                            best_eval = eval_to_cp(self.stockfish_review_analysis.get_evaluation())
+                    except Exception:
+                        best_eval = played_eval
+
+                if board.turn == chess.WHITE:
+                    labels.append(classify_move(True, before_eval, played_eval, best_eval, str(mv.uci()), str(best_uci) if best_uci else None))
+                else:
+                    labels.append(classify_move(False, before_eval, played_eval, best_eval, str(mv.uci()), str(best_uci) if best_uci else None))
+
+                try:
+                    board.push(mv)
+                except Exception:
+                    pass
+                try:
+                    self.analysis_progress = min(1.0, (i + 1) / total)
+                except Exception:
+                    pass
+
+            # Book moves only when openings DB has an entry (and don't overwrite blunders/mistakes).
+            try:
+                for i, nm in enumerate(opening_names):
+                    if not nm:
+                        continue
+                    if 0 <= i < len(labels) and labels[i] not in ('Blunder', 'Mistake'):
+                        labels[i] = 'Book'
+            except Exception:
+                pass
+
+            try:
+                if int(self._analysis_run_id) == int(run_id) and self.analysis_active:
+                    self.analysis_move_labels = list(labels)
+                    self.analysis_opening_names = list(opening_names)
+                    self.analysis_progress = None
+            except Exception:
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _draw_analysis_overlay(self) -> None:
+        win_w, win_h = self.screen.get_size()
+        board_rect = pg.Rect(int(self.offset[0]), int(self.offset[1]), int(self.size * 8), int(self.size * 8))
+
+        margin = 14
+        x = int(win_w * 0.60) + margin
+        y = int(board_rect.top)
+        w = max(180, int(win_w * 0.40) - (margin * 2))
+        h = int(board_rect.h)
+        if w < 220:
+            x = margin
+            y = margin
+            w = max(220, win_w - 2 * margin)
+            h = min(board_rect.h, win_h - 2 * margin)
+
+        panel = pg.Rect(int(x), int(y), int(w), int(h))
+        bg = pg.Surface((panel.w, panel.h), pg.SRCALPHA)
+        bg.fill((0, 0, 0, 160))
+        self.screen.blit(bg, (panel.x, panel.y))
+        pg.draw.rect(self.screen, (140, 140, 140), panel, width=1, border_radius=6)
+
+        pad = 10
+        line_h = self.eval_font.get_linesize() + 2
+        ply = max(0, int(self.analysis_index))
+        total = max(0, len(self.analysis_fens) - 1)
+        lines: list[str] = [
+            f"Analysis: {self.analysis_name or 'Analysis'}",
+            f"Ply: {ply}/{total} (Left/Right, Ctrl+S saves, ESC exits)",
+        ]
+
+        # Show opening name when the current mainline move is a book move.
+        try:
+            if not self._review_analysis_active and int(self.analysis_index) > 0:
+                mi = int(self.analysis_index) - 1
+                if 0 <= mi < len(self.analysis_move_labels) and str(self.analysis_move_labels[mi]) == 'Book':
+                    nm = ''
+                    try:
+                        nm = str(self.analysis_opening_names[mi]) if 0 <= mi < len(self.analysis_opening_names) else ''
+                    except Exception:
+                        nm = ''
+                    if nm:
+                        lines.append(f"Opening: {nm}")
+        except Exception:
+            pass
+
+        if self.analysis_last_saved_path:
+            try:
+                lines.append(f"Saved: {os.path.basename(self.analysis_last_saved_path)}")
+            except Exception:
+                pass
+        if self.analysis_progress is not None:
+            try:
+                pct = int(float(self.analysis_progress) * 100)
+                lines.append(f"Annotating... {pct}%")
+            except Exception:
+                pass
+        if self.analysis_last_error:
+            lines.append(str(self.analysis_last_error))
+
+        xx = panel.x + pad
+        yy = panel.y + pad
+        for t in lines:
+            surf = self.eval_font.render(t, False, (255, 255, 255))
+            self.screen.blit(surf, (xx, yy))
+            yy += line_h
+
+        # PV lines (reuse the same published PV data; analysis and review are mutually exclusive).
+        yy += 6
+        pv_title = self.eval_font.render('Top lines:', False, (255, 255, 255))
+        self.screen.blit(pv_title, (xx, yy))
+        yy += line_h
+
+        self._analysis_pv_hitboxes = []
+        pv_lines: list[dict] = []
+        pv_pending = False
+        try:
+            if self._review_pv_lock.acquire(False):
+                try:
+                    pv_lines = list(self.review_pv_lines or [])
+                    pv_pending = bool(self.review_pv_pending)
+                    self._review_pv_render_cache = list(pv_lines)
+                    self._review_pv_render_pending = bool(pv_pending)
+                finally:
+                    self._review_pv_lock.release()
+            else:
+                pv_lines = list(getattr(self, '_review_pv_render_cache', []) or [])
+                pv_pending = bool(getattr(self, '_review_pv_render_pending', False))
+        except Exception:
+            pv_lines = list(getattr(self, '_review_pv_render_cache', []) or [])
+            pv_pending = bool(getattr(self, '_review_pv_render_pending', False))
+
+        if not pv_lines and pv_pending:
+            pv_lines = [{"rank": 0, "eval": {"type": "cp", "value": 0}, "moves": ["Analyzing..."], "fens": ['']}]
+        if not pv_lines:
+            pv_lines = [{"rank": 0, "eval": {"type": "cp", "value": 0}, "moves": ["(click board to analyze)"], "fens": ['']}]
+
+        max_x = panel.right - pad
+        token_gap = 10
+        token_gap_small = 6
+
+        def draw_tokens_row(x0: int, y0: int, tokens: list[tuple[str, tuple[int, int, int], tuple[dict, int] | None]], max_x_: int) -> int:
+            x = int(x0)
+            y2 = int(y0)
+            row_h2 = self.eval_font.get_linesize() + 4
+            for txt, col, meta in tokens:
+                try:
+                    surf2 = self.eval_font.render(str(txt), False, col)
+                except Exception:
+                    continue
+                if x + surf2.get_width() > max_x_ and x != int(x0):
+                    x = int(x0)
+                    y2 += row_h2
+                rect = pg.Rect(x - 2, y2 - 1, surf2.get_width() + 4, row_h2)
+                self.screen.blit(surf2, (x, y2))
+                if meta:
+                    try:
+                        pv_item, mv_i = meta
+                        self._analysis_pv_hitboxes.append((rect, pv_item, int(mv_i)))
+                    except Exception:
+                        pass
+                x += surf2.get_width() + token_gap
+            return y2 + row_h2
+
+        for item in pv_lines[:3]:
+            if not isinstance(item, dict):
+                continue
+            rank = int(item.get('rank', 0) or 0)
+            eval_d = item.get('eval') if isinstance(item.get('eval'), dict) else {"type": "cp", "value": 0}
+            moves = item.get('moves') if isinstance(item.get('moves'), list) else []
+            fens = item.get('fens') if isinstance(item.get('fens'), list) else []
+
+            x0 = int(xx)
+            y_line = int(yy)
+            if rank > 0:
+                pfx = self.eval_font.render(f"{rank}.", False, (200, 220, 255))
+                self.screen.blit(pfx, (x0, y_line))
+                x0 += pfx.get_width() + token_gap_small
+
+            score_txt = self._format_eval_short(eval_d)
+            side = self._eval_side_for_rect(eval_d)
+            if side == 'w':
+                box_bg, box_fg, box_bd = (230, 230, 230), (0, 0, 0), (180, 180, 180)
+            elif side == 'b':
+                box_bg, box_fg, box_bd = (25, 25, 25), (245, 245, 245), (110, 110, 110)
+            else:
+                box_bg, box_fg, box_bd = (140, 140, 140), (0, 0, 0), (180, 180, 180)
+
+            score_surf = self.eval_font.render(str(score_txt), False, box_fg)
+            box_pad_x = 8
+            box_pad_y = 4
+            box_rect = pg.Rect(x0, y_line - 1, score_surf.get_width() + box_pad_x * 2, score_surf.get_height() + box_pad_y)
+            try:
+                pg.draw.rect(self.screen, box_bg, box_rect, border_radius=6)
+                pg.draw.rect(self.screen, box_bd, box_rect, width=1, border_radius=6)
+            except Exception:
+                pass
+            self.screen.blit(score_surf, (box_rect.x + box_pad_x, box_rect.y + (box_rect.h - score_surf.get_height()) // 2))
+            x0 = box_rect.right + token_gap
+
+            tokens: list[tuple[str, tuple[int, int, int], tuple[dict, int] | None]] = []
+            for j, san in enumerate(moves):
+                fen_to = ''
+                try:
+                    fen_to = str(fens[j]) if 0 <= j < len(fens) else ''
+                except Exception:
+                    fen_to = ''
+                tokens.append((str(san), (220, 220, 220), (item, int(j)) if fen_to else None))
+
+            if tokens:
+                yy = int(draw_tokens_row(x0, y_line, tokens, int(max_x)))
+            else:
+                yy += line_h
+            yy += 2
+
+        if pv_pending:
+            try:
+                status = self.eval_font.render('(analyzing...)', False, (160, 180, 200))
+                self.screen.blit(status, (xx, yy))
+                yy += line_h
+            except Exception:
+                pass
+
+        yy += 8
+        title = self.eval_font.render('Moves:', False, (255, 255, 255))
+        self.screen.blit(title, (xx, yy))
+        yy += line_h
+
+        list_top = yy
+        list_bottom = panel.bottom - pad
+        row_h = self.eval_font.get_linesize() + 6
+
+        sans = self.analysis_sans or []
+        labels = self.analysis_move_labels or []
+
+        def decorate_san(i: int, san: str) -> tuple[str, tuple[int, int, int]]:
+            tag = labels[i] if 0 <= i < len(labels) else ''
+            if tag == 'Best':
+                return f"{san}*", (120, 200, 255)
+            if tag == 'Good':
+                return f"{san}+", (200, 255, 200)
+            if tag == 'Book':
+                return f"{san} (book)", (120, 200, 255)
+            if tag == 'Amazing':
+                return f"{san}!!", (120, 255, 140)
+            if tag == 'Great':
+                return f"{san}!", (170, 255, 170)
+            if tag == 'Mistake':
+                return f"{san}?", (255, 200, 120)
+            if tag == 'Blunder':
+                return f"{san}??", (255, 120, 120)
+            return san, (255, 255, 255)
+
+        fullmove_count = (len(sans) + 1) // 2
+        visible_rows = max(1, int((list_bottom - list_top) // row_h))
+        max_scroll = max(0, fullmove_count - visible_rows)
+        self.analysis_move_scroll = max(0, min(self.analysis_move_scroll, max_scroll))
+
+        col2 = panel.x + (panel.w // 2)
+        move_idx_at_pos = self.analysis_index - 1
+        self._analysis_move_hitboxes = []
+        self._analysis_variation_hitboxes = []
+
+        var_base = -1
+        var_sans: list[str] = []
+        var_fens: list[str] = []
+        try:
+            if self._review_analysis_active:
+                var_base = int(self._review_analysis_base_index)
+                var_sans = list(self._review_variations.get(var_base, []) or [])
+                var_fens = list(self._review_variation_fens.get(var_base, []) or [])
+        except Exception:
+            var_base = -1
+            var_sans = []
+            var_fens = []
+
+        try:
+            anchor_ply = 1 if var_base <= 0 else int(var_base)
+        except Exception:
+            anchor_ply = 1
+
+        y_cursor = int(list_top)
+        fm = 1 + int(self.analysis_move_scroll)
+        while fm <= fullmove_count and (y_cursor + row_h) <= int(list_bottom):
+            w_i = 2 * (fm - 1)
+            b_i = w_i + 1
+            w_san = sans[w_i] if w_i < len(sans) else ''
+            b_san = sans[b_i] if b_i < len(sans) else ''
+
+            y_row = int(y_cursor)
+            num = self.eval_font.render(f"{fm}.", False, (200, 200, 200))
+            self.screen.blit(num, (xx, y_row))
+
+            if w_san:
+                w_x = xx + num.get_width() + 8
+                w_text, w_col = decorate_san(w_i, w_san)
+                w_surf = self.eval_font.render(w_text, False, w_col)
+                w_rect = pg.Rect(w_x - 3, y_row - 1, w_surf.get_width() + 6, row_h)
+                if move_idx_at_pos == w_i:
+                    hi = pg.Surface((w_rect.w, w_rect.h), pg.SRCALPHA)
+                    hi.fill((255, 255, 255, 40))
+                    self.screen.blit(hi, (w_rect.x, w_rect.y))
+                self.screen.blit(w_surf, (w_x, y_row))
+                self._analysis_move_hitboxes.append((w_rect, w_i + 1))
+
+            if b_san:
+                b_x = col2
+                b_text, b_col = decorate_san(b_i, b_san)
+                b_surf = self.eval_font.render(b_text, False, b_col)
+                b_rect = pg.Rect(b_x - 3, y_row - 1, b_surf.get_width() + 6, row_h)
+                if move_idx_at_pos == b_i:
+                    hi = pg.Surface((b_rect.w, b_rect.h), pg.SRCALPHA)
+                    hi.fill((255, 255, 255, 40))
+                    self.screen.blit(hi, (b_rect.x, b_rect.y))
+                self.screen.blit(b_surf, (b_x, y_row))
+                self._analysis_move_hitboxes.append((b_rect, b_i + 1))
+
+            y_cursor += int(row_h)
+
+            try:
+                if var_base >= 0 and var_sans and (int(anchor_ply) in (w_i + 1, b_i + 1)) and (y_cursor < int(list_bottom)):
+                    prefix = self.eval_font.render('Var:', False, (180, 180, 180))
+                    x0 = int(xx + 14)
+                    y0 = int(y_cursor)
+                    self.screen.blit(prefix, (x0, y0))
+                    x2 = int(x0 + prefix.get_width() + 10)
+                    y2 = int(y0)
+                    max_x2 = int(panel.right - pad)
+                    row_h2 = self.eval_font.get_linesize() + 4
+                    for j, san in enumerate(var_sans):
+                        try:
+                            surf2 = self.eval_font.render(str(san), False, (220, 220, 220))
+                        except Exception:
+                            continue
+                        if x2 + surf2.get_width() > max_x2 and x2 != int(x0):
+                            x2 = int(x0)
+                            y2 += int(row_h2)
+                            if y2 + int(row_h2) > int(list_bottom):
+                                break
+                        rect2 = pg.Rect(x2 - 2, y2 - 1, surf2.get_width() + 4, row_h2)
+                        self.screen.blit(surf2, (x2, y2))
+                        try:
+                            fen_to = str(var_fens[j]) if 0 <= j < len(var_fens) else ''
+                        except Exception:
+                            fen_to = ''
+                        if fen_to:
+                            self._analysis_variation_hitboxes.append((rect2, int(var_base), int(j + 1)))
+                        x2 += surf2.get_width() + 10
+                    y_cursor = int(y2 + row_h2)
+            except Exception:
+                pass
+
+            fm += 1
+
+        self._analysis_panel_rect = panel
 
     @staticmethod
     def _pgn_strip_comments(text: str) -> str:
@@ -4366,6 +7958,13 @@ class Engine:
         """
         self.review_last_error = ''
 
+        # Switching modes: ensure analysis is fully deactivated so overlays don't stack.
+        try:
+            if getattr(self, 'analysis_active', False):
+                self.exit_analysis(return_to_start_menu=False)
+        except Exception:
+            pass
+
         try:
             raw = open(pgn_path, 'r', encoding='utf-8', errors='ignore').read()
         except Exception as e:
@@ -4434,7 +8033,12 @@ class Engine:
         self.review_plies = moves
         self.review_fens = fens
         self.review_sans = sans_used
-        self.review_move_labels = []
+        # Pre-fill labels so book moves can appear immediately.
+        self.review_move_labels = ['' for _ in moves]
+        try:
+            self.review_opening_names = self._compute_review_openings(start_board, moves)
+        except Exception:
+            self.review_opening_names = ['' for _ in moves]
         self.review_move_scroll = 0
 
         self.review_index = 0
@@ -4452,6 +8056,9 @@ class Engine:
         self._review_analysis_base_index = 0
         self._review_analysis_fen = ''
         self._review_variations = {}
+        self._review_variation_fens = {}
+        self._review_variation_ucis = {}
+        self._review_analysis_cursor = 0
         try:
             with self._review_pv_lock:
                 self.review_pv_lines = []
@@ -4466,8 +8073,11 @@ class Engine:
         if self.review_show_best_move:
             self._request_review_best()
         self.request_review_pv()
-        # Run analysis on the parsed move list (not python-chess PGN mainline)
-        self._start_review_analysis_thread(start_board, moves)
+
+        # Load cached analysis if present; otherwise run analysis.
+        if not self._load_review_analysis_cache(pgn_path, moves):
+            # Run analysis on the parsed move list (not python-chess PGN mainline)
+            self._start_review_analysis_thread(start_board, moves)
 
         # If the original PGN contains bracketed variations, overwrite it in-place
         # with a cleaned mainline (prevents duplicate "cleaned" files).
@@ -4505,7 +8115,12 @@ class Engine:
 
         return True
 
-    def exit_review(self) -> None:
+    def exit_review(self, return_to_start_menu: bool = True) -> None:
+        # Cancel any in-flight background review analysis.
+        try:
+            self._review_analysis_run_id += 1
+        except Exception:
+            pass
         self.review_active = False
         self.review_pgn_path = None
         self.review_name = ''
@@ -4513,6 +8128,7 @@ class Engine:
         self.review_plies = []
         self.review_sans = []
         self.review_move_labels = []
+        self.review_opening_names = []
         self.review_index = 0
         self.review_best_move_uci = ''
         self.review_arrow = None
@@ -4527,20 +8143,129 @@ class Engine:
         self._review_analysis_active = False
         self._review_analysis_base_index = 0
         self._review_analysis_fen = ''
+        self._review_analysis_cursor = 0
         self._review_variations = {}
+        self._review_variation_fens = {}
+        self._review_variation_ucis = {}
         try:
             with self._review_pv_lock:
                 self.review_pv_lines = []
                 self.review_pv_pending = False
         except Exception:
             pass
-        self._restore_normal_layout()
-        self.reset_game()
+        if return_to_start_menu:
+            self._restore_normal_layout()
+            self.reset_game()
 
     def review_step(self, delta: int) -> None:
         if not self.review_active or not self.review_fens:
             return
-        new_idx = self.review_index + int(delta)
+        d = int(delta)
+        if d == 0:
+            return
+
+        # If we're inside an analysis line (PV/variation), step through it first.
+        try:
+            if self._review_analysis_active:
+                base = int(self._review_analysis_base_index)
+                cur = int(self._review_analysis_cursor)
+                if bool(getattr(self, '_review_pv_variation_active', False)) and int(getattr(self, '_review_pv_variation_base_index', -9999)) == base:
+                    vfens = list(getattr(self, '_review_pv_variation_fens', []) or [])
+                    vuci = list(getattr(self, '_review_pv_variation_ucis', []) or [])
+                else:
+                    vfens = self._review_variation_fens.get(base, [])
+                    vuci = self._review_variation_ucis.get(base, [])
+
+                # When we're back at the base position (cursor==0), treat arrow keys as mainline navigation.
+                if cur <= 0:
+                    self._review_analysis_active = False
+                    self._review_analysis_fen = ''
+                    try:
+                        self._review_pv_variation_active = False
+                    except Exception:
+                        pass
+                    # Fall through to mainline navigation.
+                else:
+                    # At the last move of the variation, Right should do nothing.
+                    if d > 0 and cur >= len(vfens):
+                        return
+
+                # Forward within variation.
+                if d > 0 and cur < len(vfens):
+                    new_cur = cur + 1
+                    tgt_fen = str(vfens[new_cur - 1])
+                    uci = str(vuci[new_cur - 1]) if 0 <= (new_cur - 1) < len(vuci) else ''
+                    fen_before = ''
+                    if new_cur == 1:
+                        fen_before = str(self.review_fens[base]) if 0 <= base < len(self.review_fens) else self._review_display_fen()
+                    else:
+                        fen_before = str(vfens[new_cur - 2])
+
+                    if uci:
+                        try:
+                            self.last_move = [uci]
+                        except Exception:
+                            self.last_move = []
+                        try:
+                            self._play_sound_for_move_from_fen(str(fen_before), chess.Move.from_uci(str(uci)))
+                        except Exception:
+                            pass
+
+                    self._review_analysis_cursor = int(new_cur)
+                    self._review_analysis_fen = ''
+                    self._load_fen_into_ui(tgt_fen)
+                    self.request_eval()
+                    self.request_review_pv()
+                    self.review_best_move_uci = ''
+                    self.review_arrow = None
+                    return
+
+                # Backward within variation.
+                if d < 0 and cur > 0:
+                    new_cur = cur - 1
+                    self._review_analysis_cursor = int(new_cur)
+                    self._review_analysis_fen = ''
+
+                    if new_cur == 0:
+                        # Back to base mainline position.
+                        try:
+                            self.last_move = [] if base <= 0 else [str(self.review_plies[base - 1].uci())]
+                        except Exception:
+                            self.last_move = []
+                        try:
+                            self._play_review_navigation_sound(cur, cur - 1)
+                        except Exception:
+                            pass
+                        self._load_fen_into_ui(str(self.review_fens[base]))
+                        # Exit variation mode at base (keep the saved line in the move list).
+                        self._review_analysis_active = False
+                        try:
+                            self._review_pv_variation_active = False
+                        except Exception:
+                            pass
+                    else:
+                        tgt_fen = str(vfens[new_cur - 1])
+                        uci = str(vuci[new_cur - 1]) if 0 <= (new_cur - 1) < len(vuci) else ''
+                        try:
+                            self.last_move = [uci] if uci else []
+                        except Exception:
+                            self.last_move = []
+                        try:
+                            # Back navigation uses the generic move sound.
+                            self._play_review_navigation_sound(cur, cur - 1)
+                        except Exception:
+                            pass
+                        self._load_fen_into_ui(tgt_fen)
+
+                    self.request_eval()
+                    self.request_review_pv()
+                    self.review_best_move_uci = ''
+                    self.review_arrow = None
+                    return
+        except Exception:
+            pass
+
+        new_idx = self.review_index + d
         self._review_set_index(new_idx, play_sound=True)
 
     def _load_fen_into_ui(self, fen: str) -> None:
@@ -4627,6 +8352,13 @@ class Engine:
             self.review_analysis_progress = None
             return
 
+        # Cancel any previous analysis.
+        try:
+            self._review_analysis_run_id += 1
+            run_id = int(self._review_analysis_run_id)
+        except Exception:
+            run_id = 0
+
         def eval_to_cp(e) -> int:
             if not isinstance(e, dict):
                 return 0
@@ -4679,10 +8411,6 @@ class Engine:
             if best_uci and str(played_uci) == str(best_uci):
                 return 'Best'
 
-            # Book move (heuristic): early game and close to best.
-            if ply_index <= 15 and loss <= 20 and abs_before <= 200:
-                return 'Book'
-
             # Great / Amazing: close to best and creates a notable advantage swing.
             # (Heuristic approximation of chess.com style labels.)
             if loss <= 10 and gain >= 180 and abs_before <= 250:
@@ -4713,12 +8441,15 @@ class Engine:
 
         def worker():
             try:
-                self.stockfish_review_analysis.update_engine_parameters({"UCI_LimitStrength": "false"})
+                with self._review_analysis_engine_lock:
+                    self.stockfish_review_analysis.update_engine_parameters({"UCI_LimitStrength": "false"})
             except Exception:
                 pass
             try:
-                self.stockfish_review_analysis.set_skill_level(20)
-                self.stockfish_review_analysis.set_depth(12)
+                with self._review_analysis_engine_lock:
+                    self.stockfish_review_analysis.set_skill_level(20)
+                    # Keep this lightweight so review stays responsive.
+                    self.stockfish_review_analysis.set_depth(10)
             except Exception:
                 pass
 
@@ -4728,17 +8459,30 @@ class Engine:
             move_labels: list[str] = []
             total = max(1, len(moves))
 
+            # Compute opening names per ply once (fast) so we can mark real book moves.
+            try:
+                opening_names = self._compute_review_openings(start_board, moves)
+            except Exception:
+                opening_names = ['' for _ in moves]
+
             for i, mv in enumerate(moves):
-                if not self.review_active:
+                # Stop if review mode ended or a newer analysis started.
+                try:
+                    if (not self.review_active) or int(self._review_analysis_run_id) != int(run_id):
+                        return
+                except Exception:
+                    if not self.review_active:
+                        return
                     return
                 fen_before = board.fen()
                 try:
-                    self.stockfish_review_analysis.set_fen_position(fen_before)
-                    try:
-                        before_eval = eval_to_cp(self.stockfish_review_analysis.get_evaluation())
-                    except Exception:
-                        before_eval = 0
-                    best_uci = self.stockfish_review_analysis.get_best_move_time(150)
+                    with self._review_analysis_engine_lock:
+                        self.stockfish_review_analysis.set_fen_position(fen_before)
+                        try:
+                            before_eval = eval_to_cp(self.stockfish_review_analysis.get_evaluation())
+                        except Exception:
+                            before_eval = 0
+                        best_uci = self.stockfish_review_analysis.get_best_move_time(80)
                 except Exception:
                     before_eval = 0
                     best_uci = None
@@ -4750,8 +8494,9 @@ class Engine:
                 except Exception:
                     pass
                 try:
-                    self.stockfish_review_analysis.set_fen_position(played_board.fen())
-                    played_eval = eval_to_cp(self.stockfish_review_analysis.get_evaluation())
+                    with self._review_analysis_engine_lock:
+                        self.stockfish_review_analysis.set_fen_position(played_board.fen())
+                        played_eval = eval_to_cp(self.stockfish_review_analysis.get_evaluation())
                 except Exception:
                     played_eval = 0
 
@@ -4764,8 +8509,9 @@ class Engine:
                     except Exception:
                         pass
                     try:
-                        self.stockfish_review_analysis.set_fen_position(best_board.fen())
-                        best_eval = eval_to_cp(self.stockfish_review_analysis.get_evaluation())
+                        with self._review_analysis_engine_lock:
+                            self.stockfish_review_analysis.set_fen_position(best_board.fen())
+                            best_eval = eval_to_cp(self.stockfish_review_analysis.get_evaluation())
                     except Exception:
                         best_eval = played_eval
 
@@ -4782,6 +8528,23 @@ class Engine:
                 board.push(mv)
                 self.review_analysis_progress = min(1.0, (i + 1) / total)
 
+            # Mark Book moves only when the openings database has an entry.
+            try:
+                for i, nm in enumerate(opening_names):
+                    if not nm:
+                        continue
+                    if 0 <= i < len(move_labels):
+                        if move_labels[i] not in ('Blunder', 'Mistake'):
+                            move_labels[i] = 'Book'
+            except Exception:
+                pass
+
+            # Publish opening names so the UI can show the opening title.
+            try:
+                self.review_opening_names = list(opening_names)
+            except Exception:
+                pass
+
             self.review_acpl_white = (sum(white_losses) / max(1, len(white_losses)))
             self.review_acpl_black = (sum(black_losses) / max(1, len(black_losses)))
             self.review_accuracy_white = accuracy_from_acpl(self.review_acpl_white)
@@ -4793,6 +8556,15 @@ class Engine:
                 pass
             self.review_analysis_progress = None
 
+            # Persist for next time.
+            try:
+                if self.review_active and self.review_pgn_path:
+                    # Only save if we're still the latest run.
+                    if int(self._review_analysis_run_id) == int(run_id):
+                        self._save_review_analysis_cache(str(self.review_pgn_path), moves)
+            except Exception:
+                pass
+
         t = threading.Thread(target=worker, daemon=True)
         t.start()
 
@@ -4803,15 +8575,112 @@ class Engine:
         :param piece_selected:
         :return:
         """
-        premove_piece = self._premove_piece
-        premove_to = self._premove_to
+        # Build a virtual occupancy map after applying the queued premoves.
+        # This lets us (a) draw premoved pieces at their final virtual squares and
+        # (b) temporarily hide any piece that a premove lands on (including own pieces).
+        premove_virtual: dict[Piece, tuple[int, int]] = {}
+        hidden_by_premove: set[Piece] = set()
+        try:
+            pos_by_piece: dict[Piece, tuple[int, int]] = {}
+            sq_to_piece: dict[tuple[int, int], Piece] = {}
+            queued_pieces: set[Piece] = set()
+
+            def castle_rook_squares(frm: tuple[int, int], to: tuple[int, int]) -> tuple[tuple[int, int], tuple[int, int]] | None:
+                try:
+                    fr, fc = int(frm[0]), int(frm[1])
+                    tr, tc = int(to[0]), int(to[1])
+                except Exception:
+                    return None
+                if fr != tr:
+                    return None
+                if fc != 4:
+                    return None
+                if abs(tc - fc) != 2:
+                    return None
+                if tc == 6:
+                    return (fr, 7), (fr, 5)
+                if tc == 2:
+                    return (fr, 0), (fr, 3)
+                return None
+            for p in getattr(self, 'all_pieces', []) or []:
+                try:
+                    if p is None or getattr(p, 'dead', False):
+                        continue
+                    pr, pc = int(p.position[0]), int(p.position[1])
+                    pos_by_piece[p] = (pr, pc)
+                    sq_to_piece[(pr, pc)] = p
+                except Exception:
+                    continue
+
+            for _uci, _frm, to, p in getattr(self, '_premove_queue', []) or []:
+                if p is None:
+                    continue
+                queued_pieces.add(p)
+                if p in hidden_by_premove:
+                    # A previous premove already "covered" this piece.
+                    continue
+                try:
+                    to_sq = (int(to[0]), int(to[1]))
+                except Exception:
+                    continue
+
+                old_sq = pos_by_piece.get(p)
+                if old_sq is not None and sq_to_piece.get(old_sq) == p:
+                    sq_to_piece.pop(old_sq, None)
+
+                # If something is (virtually) on the destination square, hide it.
+                victim = sq_to_piece.get(to_sq)
+                if victim is not None and victim != p:
+                    hidden_by_premove.add(victim)
+                    pos_by_piece.pop(victim, None)
+                    sq_to_piece.pop(to_sq, None)
+
+                pos_by_piece[p] = to_sq
+                sq_to_piece[to_sq] = p
+
+                # Castling premove: also move rook (visual only).
+                try:
+                    if str(getattr(p, 'piece', '')).lower() == 'k':
+                        frm_sq = tuple(pos_by_piece.get(p, to_sq))
+                        # Use the provided from-square if available in the queue tuple.
+                        try:
+                            frm_sq = (int(_frm[0]), int(_frm[1]))
+                        except Exception:
+                            pass
+                        rook_sqs = castle_rook_squares(frm_sq, to_sq)
+                        if rook_sqs is not None:
+                            rook_from, rook_to = rook_sqs
+                            rook_piece = sq_to_piece.get(rook_from)
+                            if (
+                                rook_piece is not None
+                                and str(getattr(rook_piece, 'piece', '')).lower() == 'r'
+                                and getattr(rook_piece, 'colour', '')[:1] == getattr(p, 'colour', '')[:1]
+                            ):
+                                queued_pieces.add(rook_piece)
+                                sq_to_piece.pop(rook_from, None)
+                                victim2 = sq_to_piece.get(rook_to)
+                                if victim2 is not None and victim2 != rook_piece:
+                                    hidden_by_premove.add(victim2)
+                                    pos_by_piece.pop(victim2, None)
+                                    sq_to_piece.pop(rook_to, None)
+                                pos_by_piece[rook_piece] = rook_to
+                                sq_to_piece[rook_to] = rook_piece
+                except Exception:
+                    pass
+
+            premove_virtual = {p: pos for p, pos in pos_by_piece.items() if p in queued_pieces}
+        except Exception:
+            premove_virtual = {}
+            hidden_by_premove = set()
 
         for piece in self.all_pieces:
             if piece == piece_selected:
                 continue
+            if piece in hidden_by_premove:
+                continue
             # When a premove is queued, visually "snap" the premoved piece to its destination
             # by skipping its normal draw at the original square.
-            if premove_piece is not None and premove_to is not None and piece == premove_piece:
+            if piece in premove_virtual:
                 continue
             piece.draw(self.offset, self.screen, self.size, self.flipped)
 
@@ -4819,10 +8688,17 @@ class Engine:
         if piece_selected is not None:
             piece_selected.draw(self.offset, self.screen, self.size, False)
 
-        # Draw the next premove piece last at its destination square (visual only).
-        if premove_piece is not None and premove_to is not None:
-            try:
-                if premove_piece in self.all_pieces and not getattr(premove_piece, 'dead', False):
+        # Draw premoved pieces at their virtual destination (visual only).
+        if premove_virtual:
+            for premove_piece, premove_to in premove_virtual.items():
+                if premove_piece == piece_selected:
+                    continue
+                try:
+                    if premove_piece not in self.all_pieces or getattr(premove_piece, 'dead', False):
+                        continue
+                    if premove_piece in hidden_by_premove:
+                        continue
+
                     # Ensure sprite image matches current size.
                     try:
                         premove_piece.size = int(self.size)
@@ -4842,8 +8718,8 @@ class Engine:
                         x = self.offset[0] + self.size * (-c + 7)
                         y = self.offset[1] + self.size * (-r + 7)
                     self.screen.blit(premove_piece.picture, (x, y))
-            except Exception:
-                pass
+                except Exception:
+                    continue
 
         self.draw_arrows()
 
