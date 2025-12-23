@@ -3,7 +3,7 @@ import re
 import pygame_menu as pm
 from pygame_menu.controls import Controller
 
-from src.engine.settings import _make_settings_theme, _btn_text_color
+from src.engine.settings import _make_settings_theme, _btn_text_color, _apply_menu_resize, _menu_window_size_fallback
 
 
 class SavedAnalysisMenu(pm.menu.Menu):
@@ -97,12 +97,13 @@ class SavedAnalysisMenu(pm.menu.Menu):
         self.mainloop(self.screen, self.resize_event, fps_limit=120)
 
     def resize_event(self):
-        if self.screen.get_size() != self.o_size:
-            self.resized = True
-            self.resize(self.screen.get_width(), self.screen.get_height())
-            self.render()
-            self.force_surface_cache_update()
-            self.o_size = self.screen.get_size()
+        try:
+            w, h = _menu_window_size_fallback(self.screen)
+            if (int(w), int(h)) != tuple(self.o_size):
+                self.resized = True
+                _apply_menu_resize(self, int(w), int(h))
+        except Exception:
+            pass
 
     def load_analysis(self, **kwargs):
         if self.selector is None:

@@ -139,6 +139,9 @@ class Engine:
         self.review_opening_names: list[str] = []
         self._review_opening_rect: pg.Rect | None = None
         self._review_opening_suggestion_hitboxes: list[tuple[pg.Rect, str, str]] = []  # (rect, name, uci_line)
+        self._review_opening_suggest_more_rect: pg.Rect | None = None
+        self._review_opening_suggest_key: tuple[tuple[str, ...], str] = (tuple(), '')
+        self._review_opening_suggest_offset: int = 0
         self.review_move_scroll: int = 0
         # Separate scroll for the top (stats + PV) area in review.
         self.review_top_scroll: int = 0
@@ -166,6 +169,9 @@ class Engine:
         self.analysis_opening_names: list[str] = []
         self._analysis_opening_rect: pg.Rect | None = None
         self._analysis_opening_suggestion_hitboxes: list[tuple[pg.Rect, str, str]] = []  # (rect, name, uci_line)
+        self._analysis_opening_suggest_more_rect: pg.Rect | None = None
+        self._analysis_opening_suggest_key: tuple[tuple[str, ...], str] = (tuple(), '')
+        self._analysis_opening_suggest_offset: int = 0
         self.analysis_index: int = 0
         self.analysis_move_scroll: int = 0
         # Separate scroll for the top (stats + PV) area in analysis.
@@ -2184,7 +2190,8 @@ class Engine:
                     continue
                 out.append((nm, uci_line, int(len(u))))
 
-            out.sort(key=lambda t: (-int(t[2]), str(t[0]).lower()))
+            # Prefer the shortest continuations (fewest moves) for suggestions.
+            out.sort(key=lambda t: (int(t[2]), str(t[0]).lower()))
             # Keep a small list per prefix for UI.
             out = out[:25]
             try:
@@ -2317,6 +2324,609 @@ class Engine:
             self._load_fen_into_ui(tgt_fen)
             self.request_eval()
             self.request_review_pv()
+        except Exception:
+            pass
+        return True
+
+    def _enter_opening_as_saved_variation_from_uci(self, mode: str, opening_name: str, uci_line: str) -> bool:
+        """Create/replace a saved user variation from an opening UCI line.
+
+        This variation persists until deleted and can be extended with manual moves.
+        """
+        m = str(mode or '').strip().lower()
+        if m not in ('review', 'analysis'):
+            return False
+
+        # Anchor at current mainline position.
+        if m == 'review':
+            if not self.review_active or not self.review_fens:
+                return False
+            try:
+                base = int(self.review_index)
+            except Exception:
+                base = 0
+            try:
+                base = max(0, min(base, len(self.review_fens) - 1))
+                base_fen = str(self.review_fens[base])
+            except Exception:
+                base = 0
+                base_fen = ''
+        else:
+            if not self.analysis_active or not self.analysis_fens:
+                return False
+            try:
+                base = int(self.analysis_index)
+            except Exception:
+                base = 0
+            try:
+                base = max(0, min(base, len(self.analysis_fens) - 1))
+                base_fen = str(self.analysis_fens[base])
+            except Exception:
+                base = 0
+                base_fen = ''
+
+        if not base_fen:
+            return False
+
+        # Find where this position occurs in the opening line.
+        uci_all, _san_all, _fen_all, match_ply = self._build_opening_line_variation_from_uci(str(uci_line), str(base_fen))
+        try:
+            mp = int(match_ply)
+        except Exception:
+            mp = 0
+        if mp <= 0:
+            # match_ply is only set when we match a post-move position; allow start position explicitly.
+            try:
+                if self._epd_from_fen(str(base_fen)) == self._epd_from_fen(str(chess.Board().fen())):
+                    mp = 0
+                else:
+                    return False
+            except Exception:
+                return False
+
+        cont_ucis = list(uci_all[mp:]) if uci_all else []
+        if not cont_ucis:
+            return False
+
+        # Build SAN/FEN lists from the base position.
+        try:
+            b = chess.Board(str(base_fen))
+        except Exception:
+            return False
+
+        cont_sans: list[str] = []
+        cont_fens: list[str] = []
+        valid_ucis: list[str] = []
+        for u in cont_ucis:
+            u = str(u).strip()
+            if not u:
+                break
+            try:
+                mv = chess.Move.from_uci(u)
+            except Exception:
+                break
+            if mv not in b.legal_moves:
+                break
+            try:
+                san = str(b.san(mv))
+            except Exception:
+                san = u
+            try:
+                b.push(mv)
+            except Exception:
+                break
+            try:
+                cont_sans.append(str(san))
+                cont_fens.append(str(b.fen()))
+                valid_ucis.append(str(u))
+            except Exception:
+                break
+
+        if not cont_fens:
+            return False
+
+        # Save/replace the variation at this base.
+        try:
+            self._review_variations[int(base)] = list(cont_sans)
+            self._review_variation_ucis[int(base)] = list(valid_ucis)
+            self._review_variation_fens[int(base)] = list(cont_fens)
+        except Exception:
+            return False
+
+        # Opening moves should be visibly labeled as Book.
+        try:
+            self._review_variation_labels[int(base)] = ['Book' for _ in range(len(cont_sans))]
+        except Exception:
+            pass
+
+        # Switch into variation view at the end of the opening line.
+        self._review_analysis_active = True
+        self._review_analysis_base_index = int(base)
+        self._review_analysis_fen = ''
+        self._review_analysis_cursor = int(len(cont_fens))
+        try:
+            self._opening_variation_name = str(opening_name or '')
+        except Exception:
+            self._opening_variation_name = ''
+
+        try:
+            self.last_move = [str(valid_ucis[-1])] if valid_ucis else []
+        except Exception:
+            self.last_move = []
+
+        try:
+            self._load_fen_into_ui(str(cont_fens[-1]))
+            self.request_eval()
+            self.request_review_pv()
+        except Exception:
+            pass
+
+        # Background labeling (also handles additional Book marking) + persistence in review.
+        try:
+            self._start_review_variation_analysis_thread(int(base))
+        except Exception:
+            pass
+        try:
+            if self.review_active and self.review_pgn_path:
+                self._save_review_analysis_cache(str(self.review_pgn_path), self.review_plies or [])
+        except Exception:
+            pass
+        return True
+
+    def _mainline_remaining_ucis_from_position(self, mode: str, base_index: int) -> list[str]:
+        m = str(mode or '').strip().lower()
+        base = int(base_index)
+        if m == 'review':
+            try:
+                plies = list(self.review_plies or [])
+            except Exception:
+                plies = []
+            try:
+                return [str(mv.uci()) for mv in plies[base:]]
+            except Exception:
+                return []
+        if m == 'analysis':
+            try:
+                plies = list(self.analysis_plies or [])
+            except Exception:
+                plies = []
+            try:
+                return [str(mv.uci()) for mv in plies[base:]]
+            except Exception:
+                return []
+        return []
+
+    @staticmethod
+    def _longest_prefix_match(a: list[str], b: list[str]) -> int:
+        i = 0
+        n = min(len(a), len(b))
+        while i < n and str(a[i]) == str(b[i]):
+            i += 1
+        return int(i)
+
+    def _append_uci_sequence_to_analysis_mainline_from_fen(self, start_fen: str, uci_seq: list[str]) -> bool:
+        if not self.analysis_active or not self.analysis_fens:
+            return False
+        if bool(getattr(self, '_review_analysis_active', False)):
+            return False
+        try:
+            if int(self.analysis_index) != int(len(self.analysis_fens) - 1):
+                return False
+        except Exception:
+            return False
+        try:
+            b = chess.Board(str(start_fen))
+        except Exception:
+            return False
+
+        applied = 0
+        last_uci = ''
+        last_fen = ''
+        for u in (uci_seq or []):
+            u = str(u).strip()
+            if not u:
+                break
+            try:
+                mv = chess.Move.from_uci(str(u))
+            except Exception:
+                break
+            if mv not in b.legal_moves:
+                break
+            try:
+                san = str(b.san(mv))
+            except Exception:
+                san = u
+            try:
+                b.push(mv)
+            except Exception:
+                break
+            try:
+                self.analysis_plies.append(mv)
+                self.analysis_sans.append(str(san))
+                self.analysis_fens.append(str(b.fen()))
+                last_uci = str(u)
+                last_fen = str(b.fen())
+                applied += 1
+                try:
+                    self.analysis_move_labels.append('')
+                except Exception:
+                    pass
+                try:
+                    self.analysis_opening_names.append('')
+                except Exception:
+                    pass
+            except Exception:
+                break
+
+        if applied <= 0:
+            return False
+
+        self.analysis_index = len(self.analysis_fens) - 1
+        self._review_analysis_active = False
+        self._review_analysis_base_index = int(self.analysis_index)
+        self._review_analysis_fen = ''
+        self._review_analysis_cursor = 0
+        try:
+            self.last_move = [str(last_uci)] if last_uci else []
+        except Exception:
+            self.last_move = []
+        try:
+            if last_fen:
+                self._load_fen_into_ui(str(last_fen))
+        except Exception:
+            pass
+        self.request_eval()
+        self.request_review_pv()
+        try:
+            self._start_analysis_annotation_thread(chess.Board(str(self.analysis_fens[0])), list(self.analysis_plies))
+        except Exception:
+            pass
+        return True
+
+    def _create_saved_variation_from_uci_sequence(self, mode: str, base_index: int, start_fen: str, uci_seq: list[str], default_label: str = '') -> bool:
+        m = str(mode or '').strip().lower()
+        if m not in ('review', 'analysis'):
+            return False
+        if not start_fen:
+            return False
+        if not uci_seq:
+            return False
+
+        try:
+            b = chess.Board(str(start_fen))
+        except Exception:
+            return False
+
+        sans: list[str] = []
+        fens: list[str] = []
+        ucis: list[str] = []
+        for u in uci_seq:
+            u = str(u).strip()
+            if not u:
+                break
+            try:
+                mv = chess.Move.from_uci(str(u))
+            except Exception:
+                break
+            if mv not in b.legal_moves:
+                break
+            try:
+                san = str(b.san(mv))
+            except Exception:
+                san = u
+            try:
+                b.push(mv)
+            except Exception:
+                break
+            sans.append(str(san))
+            fens.append(str(b.fen()))
+            ucis.append(str(u))
+
+        if not fens:
+            return False
+
+        base = int(base_index)
+        try:
+            self._review_variations[base] = list(sans)
+            self._review_variation_fens[base] = list(fens)
+            self._review_variation_ucis[base] = list(ucis)
+        except Exception:
+            return False
+
+        try:
+            if default_label:
+                self._review_variation_labels[base] = [str(default_label) for _ in range(len(sans))]
+            else:
+                self._review_variation_labels[base] = ['' for _ in range(len(sans))]
+        except Exception:
+            pass
+
+        # Enter variation view at the end.
+        self._review_analysis_active = True
+        self._review_analysis_base_index = int(base)
+        self._review_analysis_fen = ''
+        self._review_analysis_cursor = int(len(fens))
+
+        try:
+            self.last_move = [str(ucis[-1])] if ucis else []
+        except Exception:
+            self.last_move = []
+
+        try:
+            self._load_fen_into_ui(str(fens[-1]))
+        except Exception:
+            pass
+        self.request_eval()
+        self.request_review_pv()
+
+        try:
+            self._start_review_variation_analysis_thread(int(base))
+        except Exception:
+            pass
+        try:
+            if self.review_active and self.review_pgn_path:
+                self._save_review_analysis_cache(str(self.review_pgn_path), self.review_plies or [])
+        except Exception:
+            pass
+        return True
+
+    def _apply_uci_sequence_respecting_mainline(self, mode: str, base_index: int, uci_seq: list[str], default_label: str = '') -> bool:
+        """Follow mainline as far as it matches uci_seq, branch only at first deviation.
+
+        - If the full uci_seq matches mainline continuation, just jump forward on the mainline.
+        - If it deviates, create a saved variation anchored at the deviation ply.
+        - In Analysis, if deviation happens at the end of the mainline, extend the mainline instead.
+        """
+        m = str(mode or '').strip().lower()
+        if m not in ('review', 'analysis'):
+            return False
+        if not uci_seq:
+            return False
+
+        base = int(base_index)
+        mainline_rem = self._mainline_remaining_ucis_from_position(m, int(base))
+        match_n = self._longest_prefix_match(list(mainline_rem), [str(x) for x in (uci_seq or [])])
+
+        # If everything matches what's available on the mainline, just jump there.
+        if match_n >= len(uci_seq):
+            tgt = int(base + match_n)
+            if m == 'review':
+                try:
+                    self._review_set_index(int(tgt), play_sound=True)
+                except Exception:
+                    pass
+            else:
+                try:
+                    self._analysis_set_index(int(tgt), play_sound=True)
+                except Exception:
+                    pass
+            return True
+
+        # Advance along matching mainline prefix.
+        anchor = int(base + match_n)
+        if m == 'review':
+            try:
+                self._review_set_index(int(anchor), play_sound=True)
+            except Exception:
+                pass
+        else:
+            try:
+                self._analysis_set_index(int(anchor), play_sound=True)
+            except Exception:
+                pass
+
+        # Remaining moves from the deviation point.
+        rem = [str(x) for x in (uci_seq or [])][match_n:]
+        if not rem:
+            return True
+
+        # If we're in analysis mode and the deviation point is now at the end, extend mainline.
+        if m == 'analysis':
+            try:
+                if (not bool(getattr(self, '_review_analysis_active', False))) and int(self.analysis_index) >= int(len(self.analysis_fens) - 1):
+                    start_fen = str(self.analysis_fens[self.analysis_index])
+                    return bool(self._append_uci_sequence_to_analysis_mainline_from_fen(str(start_fen), list(rem)))
+            except Exception:
+                pass
+
+        # Otherwise, create a saved variation anchored at the deviation ply.
+        start_fen = ''
+        if m == 'review':
+            try:
+                start_fen = str(self.review_fens[anchor]) if 0 <= anchor < len(self.review_fens) else ''
+            except Exception:
+                start_fen = ''
+        else:
+            try:
+                start_fen = str(self.analysis_fens[anchor]) if 0 <= anchor < len(self.analysis_fens) else ''
+            except Exception:
+                start_fen = ''
+        if not start_fen:
+            return False
+
+        return bool(self._create_saved_variation_from_uci_sequence(m, int(anchor), str(start_fen), list(rem), default_label=str(default_label or '')))
+
+    def _apply_opening_respecting_mainline_from_uci(self, mode: str, opening_name: str, uci_line: str) -> bool:
+        """Apply an opening continuation: follow mainline while it matches, branch at deviation."""
+        m = str(mode or '').strip().lower()
+        if m not in ('review', 'analysis'):
+            return False
+
+        # Base position is the current mainline index for the mode.
+        if m == 'review':
+            if not self.review_active or not self.review_fens:
+                return False
+            try:
+                base = int(self.review_index)
+            except Exception:
+                base = 0
+            try:
+                base_fen = str(self.review_fens[base])
+            except Exception:
+                base_fen = ''
+        else:
+            if not self.analysis_active or not self.analysis_fens:
+                return False
+            try:
+                base = int(self.analysis_index)
+            except Exception:
+                base = 0
+            try:
+                base_fen = str(self.analysis_fens[base])
+            except Exception:
+                base_fen = ''
+
+        if not base_fen:
+            return False
+
+        uci_all, _san_all, _fen_all, match_ply = self._build_opening_line_variation_from_uci(str(uci_line), str(base_fen))
+        try:
+            mp = int(match_ply)
+        except Exception:
+            mp = 0
+        if mp <= 0:
+            try:
+                if self._epd_from_fen(str(base_fen)) == self._epd_from_fen(str(chess.Board().fen())):
+                    mp = 0
+                else:
+                    return False
+            except Exception:
+                return False
+
+        cont_ucis = [str(x) for x in (uci_all[mp:] if uci_all else [])]
+        if not cont_ucis:
+            return False
+
+        # Default label for opening-created variations.
+        return bool(self._apply_uci_sequence_respecting_mainline(m, int(base), list(cont_ucis), default_label='Book'))
+
+    def _apply_opening_to_analysis_mainline_from_uci(self, opening_name: str, uci_line: str) -> bool:
+        """Extend the analysis mainline using an opening UCI line.
+
+        Used when the user is on the last mainline move in Analysis mode.
+        """
+        if not self.analysis_active or not self.analysis_fens:
+            return False
+        if bool(getattr(self, '_review_analysis_active', False)):
+            # If already inside a variation overlay, don't mutate mainline here.
+            return False
+        try:
+            if int(self.analysis_index) < int(len(self.analysis_fens) - 1):
+                return False
+        except Exception:
+            return False
+
+        try:
+            base = int(self.analysis_index)
+        except Exception:
+            base = 0
+        try:
+            base = max(0, min(base, len(self.analysis_fens) - 1))
+            base_fen = str(self.analysis_fens[base])
+        except Exception:
+            base_fen = ''
+        if not base_fen:
+            return False
+
+        # Find where this position occurs in the opening line and take the continuation.
+        uci_all, _san_all, _fen_all, match_ply = self._build_opening_line_variation_from_uci(str(uci_line), str(base_fen))
+        try:
+            mp = int(match_ply)
+        except Exception:
+            mp = 0
+        if mp <= 0:
+            try:
+                if self._epd_from_fen(str(base_fen)) == self._epd_from_fen(str(chess.Board().fen())):
+                    mp = 0
+                else:
+                    return False
+            except Exception:
+                return False
+
+        cont_ucis = list(uci_all[mp:]) if uci_all else []
+        if not cont_ucis:
+            return False
+
+        try:
+            b = chess.Board(str(base_fen))
+        except Exception:
+            return False
+
+        cont_sans: list[str] = []
+        cont_fens: list[str] = []
+        valid_ucis: list[str] = []
+        for u in cont_ucis:
+            u = str(u).strip()
+            if not u:
+                break
+            try:
+                mv = chess.Move.from_uci(u)
+            except Exception:
+                break
+            if mv not in b.legal_moves:
+                break
+            try:
+                san = str(b.san(mv))
+            except Exception:
+                san = u
+            try:
+                b.push(mv)
+            except Exception:
+                break
+            cont_sans.append(str(san))
+            cont_fens.append(str(b.fen()))
+            valid_ucis.append(str(u))
+
+        if not cont_fens:
+            return False
+
+        # Append to analysis mainline.
+        try:
+            for i in range(len(valid_ucis)):
+                mv = chess.Move.from_uci(str(valid_ucis[i]))
+                self.analysis_plies.append(mv)
+                try:
+                    self.analysis_sans.append(str(cont_sans[i]))
+                except Exception:
+                    pass
+                self.analysis_fens.append(str(cont_fens[i]))
+                try:
+                    self.analysis_move_labels.append('')
+                except Exception:
+                    pass
+                try:
+                    self.analysis_opening_names.append('')
+                except Exception:
+                    pass
+        except Exception:
+            return False
+
+        self.analysis_index = len(self.analysis_fens) - 1
+
+        # Ensure we're in mainline view.
+        self._review_analysis_active = False
+        self._review_analysis_base_index = int(self.analysis_index)
+        self._review_analysis_fen = ''
+        self._review_analysis_cursor = 0
+        try:
+            self._opening_variation_name = ''
+        except Exception:
+            pass
+
+        try:
+            self.last_move = [str(valid_ucis[-1])] if valid_ucis else []
+        except Exception:
+            self.last_move = []
+
+        try:
+            self._load_fen_into_ui(str(cont_fens[-1]))
+        except Exception:
+            pass
+        self.request_eval()
+        self.request_review_pv()
+
+        try:
+            self._start_analysis_annotation_thread(chess.Board(str(self.analysis_fens[0])), list(self.analysis_plies))
         except Exception:
             pass
         return True
@@ -2526,7 +3136,7 @@ class Engine:
 
     def _start_review_variation_analysis_thread(self, base_index: int) -> None:
         """Compute move-quality labels for a saved user variation at base_index."""
-        if not self.review_active:
+        if not (self.review_active or self.analysis_active):
             return
         if not self._ensure_review_analysis_engine() or self.stockfish_review_analysis is None:
             return
@@ -2549,7 +3159,10 @@ class Engine:
             return
 
         try:
-            start_fen = str(self.review_fens[base]) if 0 <= base < len(self.review_fens) else ''
+            if self.review_active and self.review_fens:
+                start_fen = str(self.review_fens[base]) if 0 <= base < len(self.review_fens) else ''
+            else:
+                start_fen = str(self.analysis_fens[base]) if 0 <= base < len(self.analysis_fens) else ''
         except Exception:
             start_fen = ''
         if not start_fen:
@@ -2631,7 +3244,7 @@ class Engine:
             labels: list[str] = []
             for uci in ucis:
                 try:
-                    if (not self.review_active) or int(self._review_variation_analysis_run_ids.get(base, -1)) != int(rid):
+                    if (not (self.review_active or self.analysis_active)) or int(self._review_variation_analysis_run_ids.get(base, -1)) != int(rid):
                         return
                 except Exception:
                     return
@@ -2700,7 +3313,10 @@ class Engine:
                 if self._ensure_openings_prefix_best():
                     main_prefix: list[str] = []
                     try:
-                        main_prefix = [str(m.uci()) for m in (self.review_plies[:base] if self.review_plies else [])]
+                        if self.review_active:
+                            main_prefix = [str(m.uci()) for m in (self.review_plies[:base] if self.review_plies else [])]
+                        else:
+                            main_prefix = [str(m.uci()) for m in (self.analysis_plies[:base] if self.analysis_plies else [])]
                     except Exception:
                         main_prefix = []
                     combined: list[str] = list(main_prefix)
@@ -3569,6 +4185,16 @@ class Engine:
             b = chess.Board(fen_before)
         except Exception:
             return
+
+        # Detect move traits before pushing.
+        try:
+            is_castle = bool(b.is_castling(mv))
+        except Exception:
+            is_castle = False
+        try:
+            is_promotion = bool(getattr(mv, 'promotion', None) is not None)
+        except Exception:
+            is_promotion = False
         try:
             is_capture = b.is_capture(mv)
         except Exception:
@@ -3584,6 +4210,8 @@ class Engine:
                 pg.mixer.music.load('data/sounds/mate.wav')
             elif b.is_check():
                 pg.mixer.music.load('data/sounds/check.aiff')
+            elif is_castle or is_promotion:
+                pg.mixer.music.load('data/sounds/castle.mp3')
             elif is_capture:
                 pg.mixer.music.load('data/sounds/capture.mp3')
             else:
@@ -3987,6 +4615,7 @@ class Engine:
             self._draw_review_move_quality_marker()
             self._draw_review_overlay()
         if self.analysis_active:
+            self._draw_analysis_move_quality_marker()
             self._draw_analysis_overlay()
         if self.end_popup_active:
             self._draw_end_popup()
@@ -4262,6 +4891,24 @@ class Engine:
                         try:
                             self._nav_hold_dir = 1
                             self._nav_hold_next_ms = int(pg.time.get_ticks()) + 240
+                        except Exception:
+                            pass
+                    elif event.key == pg.K_DOWN:
+                        # Enter a saved user variation under the current mainline ply.
+                        # Only applies when not already inside a variation.
+                        try:
+                            if not bool(getattr(self, '_review_analysis_active', False)):
+                                base = int(self.analysis_index)
+                                if (self._review_variations.get(base, []) or []) and (self._review_variation_fens.get(base, []) or []):
+                                    self._analysis_set_variation_cursor(int(base), 1, play_sound=True)
+                        except Exception:
+                            pass
+                    elif event.key == pg.K_UP:
+                        # If currently inside a variation, go back to the mainline base position.
+                        try:
+                            if bool(getattr(self, '_review_analysis_active', False)):
+                                base = int(getattr(self, '_review_analysis_base_index', int(self.analysis_index)))
+                                self._analysis_set_index(int(base), play_sound=False)
                         except Exception:
                             pass
                     elif event.key == pg.K_s and (pg.key.get_mods() & pg.KMOD_CTRL):
@@ -4959,6 +5606,17 @@ class Engine:
             self._load_fen_into_ui(fen_before)
             self.selected_square = None
             return
+
+        # If we're on a previous mainline position and the move matches the next mainline move,
+        # do not create a variation; just move forward on the mainline.
+        try:
+            if (not bool(getattr(self, '_review_analysis_active', False))) and int(self.review_index) < int(len(self.review_fens) - 1):
+                if 0 <= int(self.review_index) < len(self.review_plies) and str(mv.uci()) == str(self.review_plies[int(self.review_index)].uci()):
+                    self._review_set_index(int(self.review_index) + 1, play_sound=True)
+                    self.selected_square = None
+                    return
+        except Exception:
+            pass
 
         # Start or continue an analysis branch.
         if not self._review_analysis_active:
@@ -6213,6 +6871,11 @@ class Engine:
         except Exception:
             pass
         try:
+            self._game_movelist_prev_rect = None
+            self._game_movelist_next_rect = None
+        except Exception:
+            pass
+        try:
             self._game_movelist_panel_rect = None
         except Exception:
             pass
@@ -6314,7 +6977,10 @@ class Engine:
             move_no += 1
 
         list_top = int(yy)
-        list_bottom = int(panel.bottom - pad)
+        # Reserve footer space for prev/next arrows.
+        footer_h = max(28, int(row_h))
+        footer_y = int(panel.bottom - pad - footer_h)
+        list_bottom = int(footer_y - 6)
         visible_rows = max(1, int((list_bottom - list_top) // row_h))
         if visible_rows <= 0:
             return
@@ -6375,6 +7041,43 @@ class Engine:
 
             y_cursor += int(row_h)
 
+        # Footer nav buttons (◀ / ▶) at bottom of move list.
+        try:
+            btn_w = max(40, int(footer_h * 1.35))
+            btn_h = int(footer_h)
+            gap_btn = 12
+            total_w = int(btn_w * 2 + gap_btn)
+            bx = int(panel.centerx - total_w // 2)
+            by = int(footer_y)
+            prev_rect = pg.Rect(int(bx), int(by), int(btn_w), int(btn_h))
+            next_rect = pg.Rect(int(bx + btn_w + gap_btn), int(by), int(btn_w), int(btn_h))
+            self._game_movelist_prev_rect = prev_rect
+            self._game_movelist_next_rect = next_rect
+
+            # Divider line above footer.
+            try:
+                pg.draw.line(self.screen, (140, 140, 140), (panel.x + pad, footer_y - 3), (panel.right - pad, footer_y - 3), width=1)
+            except Exception:
+                pass
+
+            def draw_arrow_btn(r: pg.Rect, direction: str) -> None:
+                pg.draw.rect(self.screen, (25, 25, 25), r, border_radius=8)
+                pg.draw.rect(self.screen, (110, 110, 110), r, width=1, border_radius=8)
+                cx, cy = r.centerx, r.centery
+                sx = max(8, int(r.w * 0.18))
+                sy = max(8, int(r.h * 0.28))
+                if direction == 'left':
+                    pts = [(cx + sx, cy - sy), (cx + sx, cy + sy), (cx - sx, cy)]
+                else:
+                    pts = [(cx - sx, cy - sy), (cx - sx, cy + sy), (cx + sx, cy)]
+                pg.draw.polygon(self.screen, (220, 220, 220), pts)
+
+            draw_arrow_btn(prev_rect, 'left')
+            draw_arrow_btn(next_rect, 'right')
+        except Exception:
+            self._game_movelist_prev_rect = None
+            self._game_movelist_next_rect = None
+
     def _handle_game_movelist_click(self, pos: tuple[int, int]) -> bool:
         """Handle clicks on the normal-game move list (jump to ply)."""
         if self.review_active or getattr(self, 'analysis_active', False) or self.end_popup_active:
@@ -6393,6 +7096,35 @@ class Engine:
                 return False
         except Exception:
             return False
+
+        # Footer arrows: step backward/forward through positions.
+        try:
+            prev_r = getattr(self, '_game_movelist_prev_rect', None)
+            next_r = getattr(self, '_game_movelist_next_rect', None)
+            if prev_r is not None and prev_r.collidepoint(pos):
+                try:
+                    cur = int(getattr(self, '_game_browse_index', None) or (len(self.game_fens) - 1))
+                except Exception:
+                    cur = max(0, int(len(self.game_fens) - 1))
+                if cur > 0:
+                    if not getattr(self, '_game_browse_active', False):
+                        self._enter_game_browse()
+                        try:
+                            cur = int(getattr(self, '_game_browse_index', cur))
+                        except Exception:
+                            pass
+                    self._set_game_browse_index(int(cur - 1), play_sound=True)
+                return True
+            if next_r is not None and next_r.collidepoint(pos):
+                if getattr(self, '_game_browse_active', False):
+                    try:
+                        cur = int(getattr(self, '_game_browse_index', 0) or 0)
+                    except Exception:
+                        cur = 0
+                    self._set_game_browse_index(int(cur + 1), play_sound=True)
+                return True
+        except Exception:
+            pass
 
         for rect, ply_index in getattr(self, '_game_move_hitboxes', []):
             try:
@@ -6431,6 +7163,80 @@ class Engine:
 
         # Analysis mode: undo deletes the last move in the current line and goes back a position.
         if getattr(self, 'analysis_active', False):
+            # If we're inside a saved variation overlay, undo should ONLY affect that variation.
+            try:
+                if bool(getattr(self, '_review_analysis_active', False)):
+                    base = int(getattr(self, '_review_analysis_base_index', int(self.analysis_index)))
+                    cur = int(getattr(self, '_review_analysis_cursor', 0) or 0)
+                    if cur > 0:
+                        # Remove the move that led to the currently viewed variation position.
+                        new_cur = int(cur - 1)
+                        try:
+                            self._review_variations[base] = list((self._review_variations.get(base, []) or [])[:new_cur])
+                        except Exception:
+                            pass
+                        try:
+                            self._review_variation_fens[base] = list((self._review_variation_fens.get(base, []) or [])[:new_cur])
+                        except Exception:
+                            pass
+                        try:
+                            self._review_variation_ucis[base] = list((self._review_variation_ucis.get(base, []) or [])[:new_cur])
+                        except Exception:
+                            pass
+                        try:
+                            self._review_variation_labels[base] = list((self._review_variation_labels.get(base, []) or [])[:new_cur])
+                        except Exception:
+                            pass
+
+                        self._review_analysis_cursor = int(new_cur)
+                        self._review_analysis_fen = ''
+
+                        # Update highlight + display.
+                        if new_cur == 0:
+                            tgt_fen = ''
+                            try:
+                                tgt_fen = str(self.analysis_fens[base]) if 0 <= base < len(self.analysis_fens) else ''
+                            except Exception:
+                                tgt_fen = ''
+                            if not tgt_fen:
+                                return
+                            try:
+                                self.last_move = [] if base <= 0 else [str(self.analysis_plies[base - 1].uci())]
+                            except Exception:
+                                self.last_move = []
+                        else:
+                            tgt_fen = ''
+                            try:
+                                tgt_fen = str(self._review_variation_fens.get(base, [])[new_cur - 1])
+                            except Exception:
+                                tgt_fen = ''
+                            if not tgt_fen:
+                                return
+                            try:
+                                uci = str(self._review_variation_ucis.get(base, [])[new_cur - 1])
+                            except Exception:
+                                uci = ''
+                            try:
+                                self.last_move = [uci] if uci else []
+                            except Exception:
+                                self.last_move = []
+
+                        try:
+                            self._load_fen_into_ui(str(tgt_fen))
+                        except Exception:
+                            pass
+                        self.request_eval()
+                        self.request_review_pv()
+
+                        # Re-run variation classification for the shortened line.
+                        try:
+                            self._start_review_variation_analysis_thread(int(base))
+                        except Exception:
+                            pass
+                        return
+            except Exception:
+                pass
+
             try:
                 if not self.analysis_fens or len(self.analysis_fens) <= 1:
                     return
@@ -6460,9 +7266,38 @@ class Engine:
             self._review_analysis_base_index = int(self.analysis_index)
             self._review_analysis_fen = ''
             self._review_analysis_cursor = 0
-            self._review_variations = {}
-            self._review_variation_fens = {}
-            self._review_variation_ucis = {}
+
+            # Preserve saved variations when undoing on the mainline.
+            # Only prune variations that were anchored beyond the new end of the mainline.
+            try:
+                max_base = int(len(self.analysis_fens) - 1)
+            except Exception:
+                max_base = -1
+
+            try:
+                self._review_variations = {
+                    int(k): v for k, v in (getattr(self, '_review_variations', {}) or {}).items() if int(k) <= max_base
+                }
+            except Exception:
+                pass
+            try:
+                self._review_variation_fens = {
+                    int(k): v for k, v in (getattr(self, '_review_variation_fens', {}) or {}).items() if int(k) <= max_base
+                }
+            except Exception:
+                pass
+            try:
+                self._review_variation_ucis = {
+                    int(k): v for k, v in (getattr(self, '_review_variation_ucis', {}) or {}).items() if int(k) <= max_base
+                }
+            except Exception:
+                pass
+            try:
+                self._review_variation_labels = {
+                    int(k): v for k, v in (getattr(self, '_review_variation_labels', {}) or {}).items() if int(k) <= max_base
+                }
+            except Exception:
+                pass
 
             # Update last-move highlight.
             try:
@@ -7253,6 +8088,7 @@ class Engine:
         # Render top section (stats + PV) inside top_rect.
         self._review_opening_rect = None
         self._review_opening_suggestion_hitboxes = []
+        self._review_opening_suggest_more_rect = None
         xx = top_rect.x + pad
         yy = top_rect.y + pad - int(top_scroll)
         for t in lines:
@@ -7297,10 +8133,72 @@ class Engine:
                     except Exception:
                         prefix_ucis = []
 
-                    suggestions = self._opening_suggestions_for_prefix(prefix_ucis, limit=3, exclude_name=opening_nm)
+                    all_suggestions = self._opening_suggestions_for_prefix(prefix_ucis, limit=25, exclude_name=opening_nm)
+                    n_sug = len(all_suggestions)
+                    if n_sug > 3:
+                        try:
+                            key = (tuple(prefix_ucis), str(opening_nm or '').strip().lower())
+                        except Exception:
+                            key = (tuple(), '')
+                        try:
+                            if key != (getattr(self, '_review_opening_suggest_key', (tuple(), '')) or (tuple(), '')):
+                                self._review_opening_suggest_key = key
+                                self._review_opening_suggest_offset = 0
+                        except Exception:
+                            self._review_opening_suggest_key = key
+                            self._review_opening_suggest_offset = 0
+
+                        try:
+                            lab = self.eval_font.render('See more', False, (200, 200, 200))
+                            sbx = 8
+                            sby = 4
+                            orect = getattr(self, '_review_opening_rect', None)
+                            if orect is None:
+                                bx = int(xx + 12)
+                                by = int(yy + 2)
+                            else:
+                                bx = int(orect.right + 8)
+                                by = int(orect.y)
+                            brect = pg.Rect(int(bx), int(by), int(lab.get_width() + 2 * sbx), int(lab.get_height() + 2 * sby))
+
+                            # Clamp into the top panel; if it would overlap, fall back below.
+                            try:
+                                max_x = int(top_rect.right - pad - brect.w)
+                                brect.x = int(min(int(brect.x), int(max_x)))
+                            except Exception:
+                                pass
+                            if orect is not None and brect.x < int(orect.right + 4):
+                                brect.x = int(xx + 12)
+                                brect.y = int(yy + 2)
+
+                            self._review_opening_suggest_more_rect = brect
+                            pg.draw.rect(self.screen, (25, 25, 25), brect, border_radius=9)
+                            pg.draw.rect(self.screen, (110, 110, 110), brect, width=1, border_radius=9)
+                            self.screen.blit(lab, (int(brect.x + sbx), int(brect.y + sby)))
+                            if orect is None or brect.y >= int(yy):
+                                yy = int(brect.bottom + 2)
+                        except Exception:
+                            self._review_opening_suggest_more_rect = None
+
+                        try:
+                            off = int(getattr(self, '_review_opening_suggest_offset', 0) or 0)
+                        except Exception:
+                            off = 0
+                        off = int(off) % int(n_sug)
+                        suggestions = [all_suggestions[(off + i) % n_sug] for i in range(3)]
+                    else:
+                        suggestions = list(all_suggestions)
+
                     for sidx, (snm, suci_line, _slen) in enumerate(suggestions):
                         preview = self._opening_next_moves_preview(str(suci_line), prefix_len=len(prefix_ucis), max_moves=2)
-                        label = f"{sidx + 1}. {snm}"
+                        try:
+                            if n_sug > 0 and n_sug > 3:
+                                num = int(((off + sidx) % n_sug) + 1)
+                            else:
+                                num = int(sidx + 1)
+                        except Exception:
+                            num = int(sidx + 1)
+                        label = f"{num}. {snm}"
                         if preview:
                             label = f"{label}  (next: {preview})"
 
@@ -7587,9 +8485,19 @@ class Engine:
         yy += line_h
 
         list_top = yy
-        list_bottom = bottom_rect.bottom - pad
+        # Reserve footer space for prev/next arrows.
+        footer_h = max(28, int(self.eval_font.get_linesize() + 6))
+        footer_y = int(bottom_rect.bottom - pad - footer_h)
+        list_bottom = int(footer_y - 6)
         row_h = self.eval_font.get_linesize() + 6
         visible_rows = max(1, int((list_bottom - list_top) // row_h))
+
+        # Footer nav buttons hitboxes (used by click handler).
+        try:
+            self._review_movelist_prev_rect = None
+            self._review_movelist_next_rect = None
+        except Exception:
+            pass
 
         # Build full-move rows from SAN list.
         sans = self.review_sans or []
@@ -7782,6 +8690,42 @@ class Engine:
 
             fm += 1
 
+        # Footer nav buttons (◀ / ▶) at bottom of move list.
+        try:
+            btn_w = max(40, int(footer_h * 1.35))
+            btn_h = int(footer_h)
+            gap_btn = 12
+            total_w = int(btn_w * 2 + gap_btn)
+            bx = int(bottom_rect.centerx - total_w // 2)
+            by = int(footer_y)
+            prev_rect = pg.Rect(int(bx), int(by), int(btn_w), int(btn_h))
+            next_rect = pg.Rect(int(bx + btn_w + gap_btn), int(by), int(btn_w), int(btn_h))
+            self._review_movelist_prev_rect = prev_rect
+            self._review_movelist_next_rect = next_rect
+
+            try:
+                pg.draw.line(self.screen, (140, 140, 140), (bottom_rect.x + pad, footer_y - 3), (bottom_rect.right - pad, footer_y - 3), width=1)
+            except Exception:
+                pass
+
+            def draw_arrow_btn(r: pg.Rect, direction: str) -> None:
+                pg.draw.rect(self.screen, (25, 25, 25), r, border_radius=8)
+                pg.draw.rect(self.screen, (110, 110, 110), r, width=1, border_radius=8)
+                cx, cy = r.centerx, r.centery
+                sx = max(8, int(r.w * 0.18))
+                sy = max(8, int(r.h * 0.28))
+                if direction == 'left':
+                    pts = [(cx + sx, cy - sy), (cx + sx, cy + sy), (cx - sx, cy)]
+                else:
+                    pts = [(cx - sx, cy - sy), (cx - sx, cy + sy), (cx + sx, cy)]
+                pg.draw.polygon(self.screen, (220, 220, 220), pts)
+
+            draw_arrow_btn(prev_rect, 'left')
+            draw_arrow_btn(next_rect, 'right')
+        except Exception:
+            self._review_movelist_prev_rect = None
+            self._review_movelist_next_rect = None
+
         # Store panel rect for click handling.
         self._review_panel_rect = panel
 
@@ -7904,6 +8848,122 @@ class Engine:
         # Top-right corner of the destination square.
         self.screen.blit(marker, (sq_x + self.size - box - pad, sq_y + pad))
 
+    def _draw_analysis_move_quality_marker(self) -> None:
+        """Draw a small move-quality symbol on the destination square in analysis mode."""
+        if not self.analysis_active:
+            return
+
+        tag = ''
+        uci = ''
+
+        in_variation_move = False
+
+        # If we're inside a variation move, use variation labels instead of mainline labels.
+        try:
+            if bool(getattr(self, '_review_analysis_active', False)):
+                base = int(getattr(self, '_review_analysis_base_index', -1))
+                cur = int(getattr(self, '_review_analysis_cursor', 0) or 0)
+                if cur > 0 and base >= 0:
+                    in_variation_move = True
+                    vlabels = list((getattr(self, '_review_variation_labels', {}) or {}).get(base, []) or [])
+                    vucis = list((getattr(self, '_review_variation_ucis', {}) or {}).get(base, []) or [])
+                    if 0 <= (cur - 1) < len(vlabels):
+                        tag = str(vlabels[cur - 1])
+                    if 0 <= (cur - 1) < len(vucis):
+                        uci = str(vucis[cur - 1])
+        except Exception:
+            tag = ''
+            uci = ''
+            in_variation_move = False
+
+        # Never fall back to mainline while showing a variation position.
+        if in_variation_move:
+            if not tag or not uci:
+                return
+
+        # Fallback to mainline marker.
+        if not tag or not uci:
+            idx = int(self.analysis_index) - 1
+            if idx < 0:
+                return
+            labels = getattr(self, 'analysis_move_labels', []) or []
+            if idx >= len(labels):
+                return
+            tag = labels[idx]
+            try:
+                uci = str(self.analysis_plies[idx].uci())
+            except Exception:
+                return
+
+        fg_map: dict[str, tuple[int, int, int]] = {
+            'Best': (120, 200, 255),
+            'Good': (200, 255, 200),
+            'Book': (120, 200, 255),
+            'Amazing': (120, 255, 140),
+            'Great': (170, 255, 170),
+            'Mistake': (255, 200, 120),
+            'Blunder': (255, 120, 120),
+        }
+        if tag not in fg_map:
+            return
+        fg = fg_map[tag]
+
+        if len(uci) < 4:
+            return
+        try:
+            row, col = square_on(uci[2:4])
+        except Exception:
+            return
+
+        if self.flipped:
+            row = 7 - row
+            col = 7 - col
+
+        sq_x = int(self.offset[0] + self.size * col)
+        sq_y = int(self.offset[1] + self.size * row)
+
+        pad = max(2, int(self.size * 0.05))
+        box = max(16, min(28, int(self.size * 0.42)))
+        marker = pg.Surface((box, box), pg.SRCALPHA)
+        marker.fill((0, 0, 0, 0))
+        pg.draw.rect(marker, (0, 0, 0, 170), pg.Rect(0, 0, box, box), border_radius=6)
+        pg.draw.rect(marker, fg, pg.Rect(0, 0, box, box), width=2, border_radius=6)
+
+        # Draw symbol. Use vector shapes for Best/Good to avoid missing Unicode glyphs.
+        if tag == 'Good':
+            a = (int(box * 0.25), int(box * 0.55))
+            b = (int(box * 0.42), int(box * 0.72))
+            c = (int(box * 0.78), int(box * 0.30))
+            pg.draw.lines(marker, fg, False, [a, b, c], max(2, int(box * 0.10)))
+        elif tag == 'Best':
+            cx, cy = box / 2.0, box / 2.0
+            r_outer = box * 0.36
+            r_inner = box * 0.16
+            pts: list[tuple[int, int]] = []
+            for k in range(10):
+                ang = math.radians(-90 + k * 36)
+                r = r_outer if (k % 2 == 0) else r_inner
+                pts.append((int(cx + r * math.cos(ang)), int(cy + r * math.sin(ang))))
+            pg.draw.polygon(marker, fg, pts, width=max(2, int(box * 0.08)))
+        else:
+            symbol_map: dict[str, str] = {
+                'Book': 'B',
+                'Amazing': '!!',
+                'Great': '!',
+                'Mistake': '?',
+                'Blunder': '??',
+            }
+            symbol = symbol_map.get(tag, '')
+            if symbol:
+                try:
+                    txt = self.eval_font.render(symbol, False, fg)
+                    marker.blit(txt, ((box - txt.get_width()) // 2, (box - txt.get_height()) // 2))
+                except Exception:
+                    pass
+
+        # Top-right corner of the destination square.
+        self.screen.blit(marker, (sq_x + self.size - box - pad, sq_y + pad))
+
     def _review_scroll_moves(self, delta_rows: int) -> None:
         try:
             self.review_move_scroll = max(0, int(self.review_move_scroll) + int(delta_rows))
@@ -7913,25 +8973,59 @@ class Engine:
     def _handle_review_click(self, pos: tuple[int, int]) -> None:
         if not self.review_active:
             return False
+
+        # Footer arrows: step backward/forward through positions.
+        try:
+            prev_r = getattr(self, '_review_movelist_prev_rect', None)
+            next_r = getattr(self, '_review_movelist_next_rect', None)
+            if prev_r is not None and prev_r.collidepoint(pos):
+                self.review_step(-1)
+                return True
+            if next_r is not None and next_r.collidepoint(pos):
+                self.review_step(1)
+                return True
+        except Exception:
+            pass
         # Clicking an opening suggestion switches to that opening line.
         try:
             top_r = getattr(self, '_review_top_rect', None)
             if top_r is None or top_r.collidepoint(pos):
+                more_r = getattr(self, '_review_opening_suggest_more_rect', None)
+                if more_r is not None and more_r.collidepoint(pos):
+                    try:
+                        self._review_opening_suggest_offset = int(getattr(self, '_review_opening_suggest_offset', 0) or 0) + 3
+                    except Exception:
+                        self._review_opening_suggest_offset = 0
+                    return True
                 for rect, nm, uci_line in getattr(self, '_review_opening_suggestion_hitboxes', []):
                     if rect.collidepoint(pos):
-                        self._enter_opening_variation_from_uci(str(self._review_display_fen()), 'review', str(nm), str(uci_line))
+                        self._apply_opening_respecting_mainline_from_uci('review', str(nm), str(uci_line))
                         return True
         except Exception:
             pass
-        # Clicking the Opening line toggles the full opening sequence as a temporary variation in the move list.
+        # Clicking the Opening line creates a saved, extendable variation (delete to remove).
         try:
             top_r = getattr(self, '_review_top_rect', None)
             orect = getattr(self, '_review_opening_rect', None)
             if orect is not None and orect.collidepoint(pos) and (top_r is None or top_r.collidepoint(pos)):
-                if bool(getattr(self, '_opening_variation_active', False)):
-                    self._exit_opening_variation('review')
-                else:
-                    self._enter_opening_variation(str(self._review_display_fen()), 'review')
+                rec = None
+                try:
+                    rec = self._opening_record_for_fen(str(self._review_display_fen()))
+                except Exception:
+                    rec = None
+                nm = ''
+                uci_line = ''
+                if isinstance(rec, dict):
+                    try:
+                        nm = str(rec.get('name', '') or '')
+                    except Exception:
+                        nm = ''
+                    try:
+                        uci_line = str(rec.get('uci', '') or '')
+                    except Exception:
+                        uci_line = ''
+                if uci_line:
+                    self._apply_opening_respecting_mainline_from_uci('review', str(nm), str(uci_line))
                 return True
         except Exception:
             pass
@@ -7993,9 +9087,17 @@ class Engine:
                     if rect.collidepoint(pos):
                         if self._review_append_pv_to_user_variation(pv_item, int(move_index)):
                             return True
-                        # Not currently inside a user variation: selecting a PV should create/enter
-                        # a user variation so it appears under the move list.
-                        self._review_create_user_variation_from_pv(pv_item, int(move_index))
+                        # Not currently inside a user variation: only create a variation if the
+                        # chosen PV deviates from the mainline; otherwise just jump along mainline.
+                        try:
+                            uci_list = pv_item.get('uci') if isinstance(pv_item.get('uci'), list) else []
+                            uci_list = [str(x) for x in uci_list]
+                        except Exception:
+                            uci_list = []
+                        n_keep = max(1, min(int(move_index) + 1, len(uci_list)))
+                        seq = list(uci_list[:n_keep])
+                        if seq:
+                            self._apply_uci_sequence_respecting_mainline('review', int(self.review_index), list(seq), default_label='')
                         return True
         except Exception:
             pass
@@ -8006,11 +9108,6 @@ class Engine:
                 return True
         for rect, ply_index in getattr(self, '_review_move_hitboxes', []):
             if rect.collidepoint(pos):
-                try:
-                    if bool(getattr(self, '_opening_variation_active', False)):
-                        self._exit_opening_variation('review')
-                except Exception:
-                    pass
                 self._review_set_index(int(ply_index), play_sound=True)
                 return True
         return False
@@ -8075,6 +9172,10 @@ class Engine:
         try:
             if self.review_active and self.review_fens:
                 self._load_fen_into_ui(str(self.review_fens[self.review_index]))
+                self.request_eval()
+                self.request_review_pv()
+            elif self.analysis_active and self.analysis_fens:
+                self._load_fen_into_ui(str(self.analysis_fens[self.analysis_index]))
                 self.request_eval()
                 self.request_review_pv()
         except Exception:
@@ -8156,6 +9257,17 @@ class Engine:
         if mv not in board.legal_moves:
             self.selected_square = None
             return
+
+        # If we're on a previous mainline position and the move matches the next mainline move,
+        # do not create a variation; just move forward on the mainline.
+        try:
+            if (not bool(getattr(self, '_review_analysis_active', False))) and int(self.review_index) < int(len(self.review_fens) - 1):
+                if 0 <= int(self.review_index) < len(self.review_plies) and str(mv.uci()) == str(self.review_plies[int(self.review_index)].uci()):
+                    self._review_set_index(int(self.review_index) + 1, play_sound=True)
+                    self.selected_square = None
+                    return
+        except Exception:
+            pass
 
         # Start or continue an analysis branch.
         if not self._review_analysis_active:
@@ -8927,6 +10039,11 @@ class Engine:
                 vfens = self._review_variation_fens.get(base, [])
                 vuci = self._review_variation_ucis.get(base, [])
 
+                # If we're at the end of a variation and press right, do nothing.
+                # (Don't spill over into mainline navigation.)
+                if d > 0 and cur >= len(vfens):
+                    return
+
                 if d > 0 and cur < len(vfens):
                     new_cur = cur + 1
                     tgt_fen = str(vfens[new_cur - 1])
@@ -8989,6 +10106,26 @@ class Engine:
         prev = int(self.analysis_index)
         new_idx = max(0, min(len(self.analysis_fens) - 1, int(new_idx)))
         if new_idx == prev:
+            # If we're currently inside a variation overlay, selecting the current mainline
+            # index should act as an explicit exit from the overlay.
+            if bool(getattr(self, '_review_analysis_active', False)):
+                self._review_analysis_active = False
+                self._review_analysis_base_index = int(self.analysis_index)
+                self._review_analysis_fen = ''
+                self._review_analysis_cursor = 0
+                try:
+                    if self.analysis_index <= 0:
+                        self.last_move = []
+                    else:
+                        self.last_move = [str(self.analysis_plies[self.analysis_index - 1].uci())]
+                except Exception:
+                    self.last_move = []
+                try:
+                    self._load_fen_into_ui(self.analysis_fens[self.analysis_index])
+                except Exception:
+                    pass
+                self.request_eval()
+                self.request_review_pv()
             return
         if play_sound:
             try:
@@ -9039,28 +10176,71 @@ class Engine:
     def _handle_analysis_click(self, pos: tuple[int, int]) -> bool:
         if not self.analysis_active:
             return False
+
+        # Footer arrows: step backward/forward through positions.
+        try:
+            prev_r = getattr(self, '_analysis_movelist_prev_rect', None)
+            next_r = getattr(self, '_analysis_movelist_next_rect', None)
+            if prev_r is not None and prev_r.collidepoint(pos):
+                self.analysis_step(-1)
+                return True
+            if next_r is not None and next_r.collidepoint(pos):
+                self.analysis_step(1)
+                return True
+        except Exception:
+            pass
         # Clicking an opening suggestion switches to that opening line.
         try:
             top_r = getattr(self, '_analysis_top_rect', None)
             if top_r is None or top_r.collidepoint(pos):
+                more_r = getattr(self, '_analysis_opening_suggest_more_rect', None)
+                if more_r is not None and more_r.collidepoint(pos):
+                    try:
+                        self._analysis_opening_suggest_offset = int(getattr(self, '_analysis_opening_suggest_offset', 0) or 0) + 3
+                    except Exception:
+                        self._analysis_opening_suggest_offset = 0
+                    return True
                 for rect, nm, uci_line in getattr(self, '_analysis_opening_suggestion_hitboxes', []):
                     if rect.collidepoint(pos):
-                        self._enter_opening_variation_from_uci(str(self._analysis_display_fen()), 'analysis', str(nm), str(uci_line))
+                        self._apply_opening_respecting_mainline_from_uci('analysis', str(nm), str(uci_line))
                         return True
         except Exception:
             pass
-        # Clicking the Opening line toggles the full opening sequence as a temporary variation in the move list.
+        # Clicking the Opening line creates a saved, extendable variation (delete to remove).
         try:
             top_r = getattr(self, '_analysis_top_rect', None)
             orect = getattr(self, '_analysis_opening_rect', None)
             if orect is not None and orect.collidepoint(pos) and (top_r is None or top_r.collidepoint(pos)):
-                if bool(getattr(self, '_opening_variation_active', False)):
-                    self._exit_opening_variation('analysis')
-                else:
-                    self._enter_opening_variation(str(self._analysis_display_fen()), 'analysis')
+                rec = None
+                try:
+                    rec = self._opening_record_for_fen(str(self._analysis_display_fen()))
+                except Exception:
+                    rec = None
+                nm = ''
+                uci_line = ''
+                if isinstance(rec, dict):
+                    try:
+                        nm = str(rec.get('name', '') or '')
+                    except Exception:
+                        nm = ''
+                    try:
+                        uci_line = str(rec.get('uci', '') or '')
+                    except Exception:
+                        uci_line = ''
+                if uci_line:
+                    self._apply_opening_respecting_mainline_from_uci('analysis', str(nm), str(uci_line))
                 return True
         except Exception:
             pass
+
+        # Delete saved variation (small 'x' next to Var:).
+        for rect, base_index in getattr(self, '_analysis_variation_delete_hitboxes', []):
+            try:
+                if rect.collidepoint(pos):
+                    self._review_delete_variation(int(base_index))
+                    return True
+            except Exception:
+                pass
         top_r = getattr(self, '_analysis_top_rect', None)
         if top_r is None or top_r.collidepoint(pos):
             for rect, pv_item, move_index in getattr(self, '_analysis_pv_hitboxes', []):
@@ -9073,11 +10253,6 @@ class Engine:
                 return True
         for rect, ply_index in getattr(self, '_analysis_move_hitboxes', []):
             if rect.collidepoint(pos):
-                try:
-                    if bool(getattr(self, '_opening_variation_active', False)):
-                        self._exit_opening_variation('analysis')
-                except Exception:
-                    pass
                 self._analysis_set_index(int(ply_index), play_sound=True)
                 return True
         return False
@@ -9166,7 +10341,6 @@ class Engine:
         if not base_fen:
             return
 
-        base = int(self.analysis_index)
         uci_list = pv_item.get('uci') if isinstance(pv_item.get('uci'), list) else []
         san_list = pv_item.get('moves') if isinstance(pv_item.get('moves'), list) else []
         fen_list = pv_item.get('fens') if isinstance(pv_item.get('fens'), list) else []
@@ -9179,38 +10353,111 @@ class Engine:
         if not fen_list:
             return
 
-        self._review_analysis_active = True
-        self._review_analysis_base_index = int(base)
-        self._review_analysis_fen = ''
-        self._review_analysis_cursor = max(1, min(int(move_index) + 1, len(fen_list)))
-        self._review_variations[int(base)] = list(san_list)
-        self._review_variation_fens[int(base)] = list(fen_list)
-        self._review_variation_ucis[int(base)] = list(uci_list)
+        n_total = min(len(uci_list), len(san_list), len(fen_list))
+        if n_total <= 0:
+            return
 
-        tgt_fen = str(fen_list[self._review_analysis_cursor - 1])
-        uci = ''
+        # If we're already inside a saved variation, append PV moves from the CURRENT displayed
+        # position onto that variation (do not overwrite earlier variation moves).
         try:
-            uci = str(uci_list[self._review_analysis_cursor - 1])
+            in_variation = bool(getattr(self, '_review_analysis_active', False)) and int(getattr(self, '_review_analysis_cursor', 0) or 0) > 0
         except Exception:
-            uci = ''
-        if uci:
+            in_variation = False
+
+        if in_variation:
+            base = int(getattr(self, '_review_analysis_base_index', int(self.analysis_index)))
+            cur = int(getattr(self, '_review_analysis_cursor', 0) or 0)
+            n_keep = max(1, min(int(move_index) + 1, int(n_total)))
+
+            # Truncate to current cursor (if user stepped back), then append PV prefix.
             try:
-                self.last_move = [uci]
+                self._review_variations[base] = list((self._review_variations.get(base, []) or [])[:cur])
             except Exception:
-                self.last_move = []
+                self._review_variations[base] = []
             try:
-                mv = chess.Move.from_uci(str(uci))
-                if self._review_analysis_cursor == 1:
-                    fen_before = base_fen
-                else:
-                    fen_before = str(fen_list[self._review_analysis_cursor - 2])
-                self._play_sound_for_move_from_fen(str(fen_before), mv)
+                self._review_variation_fens[base] = list((self._review_variation_fens.get(base, []) or [])[:cur])
+            except Exception:
+                self._review_variation_fens[base] = []
+            try:
+                self._review_variation_ucis[base] = list((self._review_variation_ucis.get(base, []) or [])[:cur])
+            except Exception:
+                self._review_variation_ucis[base] = []
+            try:
+                self._review_variation_labels[base] = list((getattr(self, '_review_variation_labels', {}) or {}).get(base, []) or [])[:cur]
+            except Exception:
+                self._review_variation_labels[base] = list((getattr(self, '_review_variation_labels', {}) or {}).get(base, []) or [])
+
+            try:
+                self._review_variations[base].extend([str(x) for x in san_list[:n_keep]])
+            except Exception:
+                pass
+            try:
+                self._review_variation_fens[base].extend([str(x) for x in fen_list[:n_keep]])
+            except Exception:
+                pass
+            try:
+                self._review_variation_ucis[base].extend([str(x) for x in uci_list[:n_keep]])
+            except Exception:
+                pass
+            try:
+                self._review_variation_labels[base].extend(['' for _ in range(int(n_keep))])
             except Exception:
                 pass
 
-        self._load_fen_into_ui(tgt_fen)
-        self.request_eval()
-        self.request_review_pv()
+            # Move cursor to new end.
+            try:
+                self._review_analysis_cursor = len(self._review_variation_fens.get(base, []) or [])
+            except Exception:
+                self._review_analysis_cursor = cur + n_keep
+            try:
+                tgt_fen = str(self._review_variation_fens.get(base, [])[-1])
+            except Exception:
+                tgt_fen = ''
+            if not tgt_fen:
+                return
+
+            last_uci = ''
+            try:
+                last_uci = str(self._review_variation_ucis.get(base, [])[-1])
+                self.last_move = [last_uci]
+            except Exception:
+                last_uci = ''
+                self.last_move = []
+
+            # Play sound for final appended move.
+            if last_uci:
+                try:
+                    mv = chess.Move.from_uci(str(last_uci))
+                    vfens2 = list(self._review_variation_fens.get(base, []) or [])
+                    if len(vfens2) == 1:
+                        fen_before = str(self.analysis_fens[base]) if 0 <= base < len(self.analysis_fens) else ''
+                    else:
+                        fen_before = str(vfens2[-2])
+                    if fen_before:
+                        self._play_sound_for_move_from_fen(str(fen_before), mv)
+                except Exception:
+                    pass
+
+            self._review_analysis_fen = ''
+            self._load_fen_into_ui(tgt_fen)
+            self.request_eval()
+            self.request_review_pv()
+            try:
+                self._start_review_variation_analysis_thread(int(base))
+            except Exception:
+                pass
+            return
+
+        # Not inside a variation overlay: only branch if the PV deviates from the mainline.
+        base = int(self.analysis_index)
+        n_keep = max(1, min(int(move_index) + 1, int(n_total)))
+        seq = list(uci_list[:n_keep])
+        if not seq:
+            return
+        try:
+            self._apply_uci_sequence_respecting_mainline('analysis', int(base), list(seq), default_label='')
+        except Exception:
+            return
 
     def _handle_analysis_board_click(self, mouse_pos: tuple[int, int]) -> None:
         if not self.analysis_active:
@@ -9292,14 +10539,14 @@ class Engine:
             # Keep selection so the user can try another destination.
             return
 
-        # If user is browsing earlier in the line, truncate forward moves.
+        # If we're on a previous mainline position and the move matches the next mainline move,
+        # do not create a variation; just move forward on the mainline.
         try:
-            if self.analysis_index < len(self.analysis_fens) - 1:
-                self.analysis_fens = self.analysis_fens[: self.analysis_index + 1]
-                self.analysis_plies = self.analysis_plies[: self.analysis_index]
-                self.analysis_sans = self.analysis_sans[: self.analysis_index]
-                self.analysis_move_labels = self.analysis_move_labels[: self.analysis_index]
-                self.analysis_opening_names = self.analysis_opening_names[: self.analysis_index]
+            if (not bool(getattr(self, '_review_analysis_active', False))) and int(self.analysis_index) < int(len(self.analysis_fens) - 1):
+                if 0 <= int(self.analysis_index) < len(self.analysis_plies) and str(mv.uci()) == str(self.analysis_plies[int(self.analysis_index)].uci()):
+                    self._analysis_set_index(int(self.analysis_index) + 1, play_sound=True)
+                    self.selected_square = None
+                    return
         except Exception:
             pass
 
@@ -9315,19 +10562,101 @@ class Engine:
             return
         new_fen = board.fen()
 
+        # If we're not on the latest mainline position, or we're inside a variation,
+        # treat the move as a user variation (do not truncate the mainline).
+        go_to_variation = False
         try:
-            self.analysis_plies.append(mv)
-            self.analysis_sans.append(str(san))
-            self.analysis_fens.append(str(new_fen))
-            self.analysis_index = len(self.analysis_fens) - 1
+            go_to_variation = bool(getattr(self, '_review_analysis_active', False)) or (int(self.analysis_index) < int(len(self.analysis_fens) - 1))
         except Exception:
-            pass
+            go_to_variation = bool(getattr(self, '_review_analysis_active', False))
 
-        # Clear overlay variation when extending the mainline.
-        self._review_analysis_active = False
-        self._review_analysis_base_index = int(self.analysis_index)
-        self._review_analysis_fen = ''
-        self._review_analysis_cursor = 0
+        if go_to_variation:
+            # Start a variation anchored at the current mainline ply if not already in one.
+            if not bool(getattr(self, '_review_analysis_active', False)):
+                try:
+                    base = int(self.analysis_index)
+                except Exception:
+                    base = 0
+                self._review_analysis_active = True
+                self._review_analysis_base_index = int(base)
+                self._review_analysis_cursor = 0
+                self._review_analysis_fen = ''
+                try:
+                    self._review_variations[int(base)] = list(self._review_variations.get(int(base), []) or [])
+                    self._review_variation_fens[int(base)] = list(self._review_variation_fens.get(int(base), []) or [])
+                    self._review_variation_ucis[int(base)] = list(self._review_variation_ucis.get(int(base), []) or [])
+                except Exception:
+                    self._review_variations[int(base)] = []
+                    self._review_variation_fens[int(base)] = []
+                    self._review_variation_ucis[int(base)] = []
+                try:
+                    self._review_variation_labels[int(base)] = list((getattr(self, '_review_variation_labels', {}) or {}).get(int(base), []) or [])
+                except Exception:
+                    pass
+
+            base = int(getattr(self, '_review_analysis_base_index', int(self.analysis_index)))
+            cur = int(getattr(self, '_review_analysis_cursor', 0) or 0)
+
+            # If user stepped back within variation then makes a move, truncate tail.
+            try:
+                if cur < len(self._review_variations.get(base, []) or []):
+                    self._review_variations[base] = list((self._review_variations.get(base, []) or [])[:cur])
+            except Exception:
+                pass
+            try:
+                if cur < len(self._review_variation_fens.get(base, []) or []):
+                    self._review_variation_fens[base] = list((self._review_variation_fens.get(base, []) or [])[:cur])
+            except Exception:
+                pass
+            try:
+                if cur < len(self._review_variation_ucis.get(base, []) or []):
+                    self._review_variation_ucis[base] = list((self._review_variation_ucis.get(base, []) or [])[:cur])
+            except Exception:
+                pass
+            try:
+                if cur < len((getattr(self, '_review_variation_labels', {}) or {}).get(base, []) or []):
+                    self._review_variation_labels[base] = list((self._review_variation_labels.get(base, []) or [])[:cur])
+            except Exception:
+                pass
+
+            # Append move to variation.
+            try:
+                self._review_variations[int(base)].append(str(san))
+                self._review_variation_fens[int(base)].append(str(new_fen))
+                self._review_variation_ucis[int(base)].append(str(mv.uci()))
+            except Exception:
+                pass
+            try:
+                # Default label blank; background thread may classify.
+                self._review_variation_labels[int(base)].append('')
+            except Exception:
+                pass
+            try:
+                self._review_analysis_cursor = len(self._review_variation_fens.get(int(base), []) or [])
+            except Exception:
+                pass
+            self._review_analysis_fen = str(new_fen)
+
+            # Background classification for analysis variations.
+            try:
+                self._start_review_variation_analysis_thread(int(base))
+            except Exception:
+                pass
+        else:
+            # Extend the mainline.
+            try:
+                self.analysis_plies.append(mv)
+                self.analysis_sans.append(str(san))
+                self.analysis_fens.append(str(new_fen))
+                self.analysis_index = len(self.analysis_fens) - 1
+            except Exception:
+                pass
+
+            # Clear overlay variation when extending the mainline.
+            self._review_analysis_active = False
+            self._review_analysis_base_index = int(self.analysis_index)
+            self._review_analysis_fen = ''
+            self._review_analysis_cursor = 0
 
         # UI update
         try:
@@ -9342,9 +10671,10 @@ class Engine:
         except Exception:
             pass
 
-        # Start (or restart) async annotations.
+        # Start (or restart) async annotations for mainline when it changed.
         try:
-            self._start_analysis_annotation_thread(chess.Board(str(self.analysis_fens[0])), list(self.analysis_plies))
+            if not go_to_variation:
+                self._start_analysis_annotation_thread(chess.Board(str(self.analysis_fens[0])), list(self.analysis_plies))
         except Exception:
             pass
 
@@ -9451,34 +10781,107 @@ class Engine:
             self.selected_square = None
             return
 
-        # If user is browsing earlier in the line, truncate forward moves.
+        # If we're on a previous mainline position and the move matches the next mainline move,
+        # do not create a variation; just move forward on the mainline.
         try:
-            if self.analysis_index < len(self.analysis_fens) - 1:
-                self.analysis_fens = self.analysis_fens[: self.analysis_index + 1]
-                self.analysis_plies = self.analysis_plies[: self.analysis_index]
-                self.analysis_sans = self.analysis_sans[: self.analysis_index]
-                self.analysis_move_labels = self.analysis_move_labels[: self.analysis_index]
-                self.analysis_opening_names = self.analysis_opening_names[: self.analysis_index]
+            if (not bool(getattr(self, '_review_analysis_active', False))) and int(self.analysis_index) < int(len(self.analysis_fens) - 1):
+                if 0 <= int(self.analysis_index) < len(self.analysis_plies) and str(mv.uci()) == str(self.analysis_plies[int(self.analysis_index)].uci()):
+                    self._analysis_set_index(int(self.analysis_index) + 1, play_sound=True)
+                    self.selected_square = None
+                    return
         except Exception:
             pass
 
         new_fen = b.fen()
-        try:
-            self.analysis_plies.append(mv)
-            self.analysis_sans.append(str(san))
-            self.analysis_fens.append(str(new_fen))
-            self.analysis_index = len(self.analysis_fens) - 1
-        except Exception:
-            pass
 
-        # Clear PV/variation overlay when extending the mainline.
-        self._review_analysis_active = False
-        self._review_analysis_base_index = int(self.analysis_index)
-        self._review_analysis_fen = ''
-        self._review_analysis_cursor = 0
-        self._review_variations = {}
-        self._review_variation_fens = {}
-        self._review_variation_ucis = {}
+        go_to_variation = False
+        try:
+            go_to_variation = bool(getattr(self, '_review_analysis_active', False)) or (int(self.analysis_index) < int(len(self.analysis_fens) - 1))
+        except Exception:
+            go_to_variation = bool(getattr(self, '_review_analysis_active', False))
+
+        if go_to_variation:
+            # Start a variation anchored at the current mainline ply if not already in one.
+            if not bool(getattr(self, '_review_analysis_active', False)):
+                try:
+                    base = int(self.analysis_index)
+                except Exception:
+                    base = 0
+                self._review_analysis_active = True
+                self._review_analysis_base_index = int(base)
+                self._review_analysis_cursor = 0
+                self._review_analysis_fen = ''
+                try:
+                    if int(base) not in (getattr(self, '_review_variations', {}) or {}):
+                        self._review_variations[int(base)] = []
+                    if int(base) not in (getattr(self, '_review_variation_fens', {}) or {}):
+                        self._review_variation_fens[int(base)] = []
+                    if int(base) not in (getattr(self, '_review_variation_ucis', {}) or {}):
+                        self._review_variation_ucis[int(base)] = []
+                    if int(base) not in (getattr(self, '_review_variation_labels', {}) or {}):
+                        self._review_variation_labels[int(base)] = []
+                except Exception:
+                    pass
+
+            base = int(getattr(self, '_review_analysis_base_index', int(self.analysis_index)))
+            cur = int(getattr(self, '_review_analysis_cursor', 0) or 0)
+
+            # Truncate tail if user stepped back inside the variation.
+            try:
+                if cur < len(self._review_variations.get(base, []) or []):
+                    self._review_variations[base] = list((self._review_variations.get(base, []) or [])[:cur])
+            except Exception:
+                pass
+            try:
+                if cur < len(self._review_variation_fens.get(base, []) or []):
+                    self._review_variation_fens[base] = list((self._review_variation_fens.get(base, []) or [])[:cur])
+            except Exception:
+                pass
+            try:
+                if cur < len(self._review_variation_ucis.get(base, []) or []):
+                    self._review_variation_ucis[base] = list((self._review_variation_ucis.get(base, []) or [])[:cur])
+            except Exception:
+                pass
+            try:
+                if cur < len((getattr(self, '_review_variation_labels', {}) or {}).get(base, []) or []):
+                    self._review_variation_labels[base] = list((self._review_variation_labels.get(base, []) or [])[:cur])
+            except Exception:
+                pass
+
+            try:
+                self._review_variations[int(base)].append(str(san))
+                self._review_variation_fens[int(base)].append(str(new_fen))
+                self._review_variation_ucis[int(base)].append(str(mv.uci()))
+            except Exception:
+                pass
+            try:
+                self._review_variation_labels[int(base)].append('')
+            except Exception:
+                pass
+            try:
+                self._review_analysis_cursor = len(self._review_variation_fens.get(int(base), []) or [])
+            except Exception:
+                pass
+            self._review_analysis_fen = str(new_fen)
+
+            try:
+                self._start_review_variation_analysis_thread(int(base))
+            except Exception:
+                pass
+        else:
+            try:
+                self.analysis_plies.append(mv)
+                self.analysis_sans.append(str(san))
+                self.analysis_fens.append(str(new_fen))
+                self.analysis_index = len(self.analysis_fens) - 1
+            except Exception:
+                pass
+
+            # Clear PV/variation overlay when extending the mainline.
+            self._review_analysis_active = False
+            self._review_analysis_base_index = int(self.analysis_index)
+            self._review_analysis_fen = ''
+            self._review_analysis_cursor = 0
 
         # UI update
         try:
@@ -9493,9 +10896,10 @@ class Engine:
         except Exception:
             pass
 
-        # Start (or restart) async annotations.
+        # Start (or restart) async annotations for mainline only when it changed.
         try:
-            self._start_analysis_annotation_thread(chess.Board(str(self.analysis_fens[0])), list(self.analysis_plies))
+            if not go_to_variation:
+                self._start_analysis_annotation_thread(chess.Board(str(self.analysis_fens[0])), list(self.analysis_plies))
         except Exception:
             pass
 
@@ -9788,6 +11192,7 @@ class Engine:
         # Render top section (stats + PV) inside top_rect.
         self._analysis_opening_rect = None
         self._analysis_opening_suggestion_hitboxes = []
+        self._analysis_opening_suggest_more_rect = None
         xx = top_rect.x + pad
         yy = top_rect.y + pad - int(top_scroll)
         for t in lines:
@@ -9832,10 +11237,72 @@ class Engine:
                     except Exception:
                         prefix_ucis = []
 
-                    suggestions = self._opening_suggestions_for_prefix(prefix_ucis, limit=3, exclude_name=opening_nm)
+                    all_suggestions = self._opening_suggestions_for_prefix(prefix_ucis, limit=25, exclude_name=opening_nm)
+                    n_sug = len(all_suggestions)
+                    if n_sug > 3:
+                        try:
+                            key = (tuple(prefix_ucis), str(opening_nm or '').strip().lower())
+                        except Exception:
+                            key = (tuple(), '')
+                        try:
+                            if key != (getattr(self, '_analysis_opening_suggest_key', (tuple(), '')) or (tuple(), '')):
+                                self._analysis_opening_suggest_key = key
+                                self._analysis_opening_suggest_offset = 0
+                        except Exception:
+                            self._analysis_opening_suggest_key = key
+                            self._analysis_opening_suggest_offset = 0
+
+                        try:
+                            lab = self.eval_font.render('See more', False, (200, 200, 200))
+                            sbx = 8
+                            sby = 4
+                            orect = getattr(self, '_analysis_opening_rect', None)
+                            if orect is None:
+                                bx = int(xx + 12)
+                                by = int(yy + 2)
+                            else:
+                                bx = int(orect.right + 8)
+                                by = int(orect.y)
+                            brect = pg.Rect(int(bx), int(by), int(lab.get_width() + 2 * sbx), int(lab.get_height() + 2 * sby))
+
+                            # Clamp into the top panel; if it would overlap, fall back below.
+                            try:
+                                max_x = int(top_rect.right - pad - brect.w)
+                                brect.x = int(min(int(brect.x), int(max_x)))
+                            except Exception:
+                                pass
+                            if orect is not None and brect.x < int(orect.right + 4):
+                                brect.x = int(xx + 12)
+                                brect.y = int(yy + 2)
+
+                            self._analysis_opening_suggest_more_rect = brect
+                            pg.draw.rect(self.screen, (25, 25, 25), brect, border_radius=9)
+                            pg.draw.rect(self.screen, (110, 110, 110), brect, width=1, border_radius=9)
+                            self.screen.blit(lab, (int(brect.x + sbx), int(brect.y + sby)))
+                            if orect is None or brect.y >= int(yy):
+                                yy = int(brect.bottom + 2)
+                        except Exception:
+                            self._analysis_opening_suggest_more_rect = None
+
+                        try:
+                            off = int(getattr(self, '_analysis_opening_suggest_offset', 0) or 0)
+                        except Exception:
+                            off = 0
+                        off = int(off) % int(n_sug)
+                        suggestions = [all_suggestions[(off + i) % n_sug] for i in range(3)]
+                    else:
+                        suggestions = list(all_suggestions)
+
                     for sidx, (snm, suci_line, _slen) in enumerate(suggestions):
                         preview = self._opening_next_moves_preview(str(suci_line), prefix_len=len(prefix_ucis), max_moves=2)
-                        label = f"{sidx + 1}. {snm}"
+                        try:
+                            if n_sug > 0 and n_sug > 3:
+                                num = int(((off + sidx) % n_sug) + 1)
+                            else:
+                                num = int(sidx + 1)
+                        except Exception:
+                            num = int(sidx + 1)
+                        label = f"{num}. {snm}"
                         if preview:
                             label = f"{label}  (next: {preview})"
 
@@ -10033,8 +11500,18 @@ class Engine:
         yy += line_h
 
         list_top = yy
-        list_bottom = bottom_rect.bottom - pad
+        # Reserve footer space for prev/next arrows.
+        footer_h = max(28, int(self.eval_font.get_linesize() + 6))
+        footer_y = int(bottom_rect.bottom - pad - footer_h)
+        list_bottom = int(footer_y - 6)
         row_h = self.eval_font.get_linesize() + 6
+
+        # Footer nav buttons hitboxes (used by click handler).
+        try:
+            self._analysis_movelist_prev_rect = None
+            self._analysis_movelist_next_rect = None
+        except Exception:
+            pass
 
         sans = self.analysis_sans or []
         labels = self.analysis_move_labels or []
@@ -10067,18 +11544,47 @@ class Engine:
         self._analysis_move_hitboxes = []
         self._analysis_variation_hitboxes = []
 
+        self._analysis_variation_delete_hitboxes = []
+
         var_base = -1
+        var_cursor_active = 0
         var_sans: list[str] = []
         var_fens: list[str] = []
+        var_labels: list[str] = []
         try:
-            if self._review_analysis_active:
+            if bool(getattr(self, '_review_analysis_active', False)):
                 var_base = int(self._review_analysis_base_index)
-                var_sans = list(self._review_variations.get(var_base, []) or [])
-                var_fens = list(self._review_variation_fens.get(var_base, []) or [])
+                var_cursor_active = int(getattr(self, '_review_analysis_cursor', 0) or 0)
+            else:
+                var_base = int(self.analysis_index)
+                var_cursor_active = 0
+            var_sans = list((getattr(self, '_review_variations', {}) or {}).get(var_base, []) or [])
+            var_fens = list((getattr(self, '_review_variation_fens', {}) or {}).get(var_base, []) or [])
+            var_labels = list((getattr(self, '_review_variation_labels', {}) or {}).get(var_base, []) or [])
         except Exception:
             var_base = -1
+            var_cursor_active = 0
             var_sans = []
             var_fens = []
+            var_labels = []
+
+        def decorate_var_san(j: int, san: str) -> tuple[str, tuple[int, int, int]]:
+            tag = var_labels[j] if 0 <= j < len(var_labels) else ''
+            if tag == 'Best':
+                return f"{san}*", (120, 200, 255)
+            if tag == 'Good':
+                return f"{san}+", (200, 255, 200)
+            if tag == 'Book':
+                return f"{san} (book)", (120, 200, 255)
+            if tag == 'Amazing':
+                return f"{san}!!", (120, 255, 140)
+            if tag == 'Great':
+                return f"{san}!", (170, 255, 170)
+            if tag == 'Mistake':
+                return f"{san}?", (255, 200, 120)
+            if tag == 'Blunder':
+                return f"{san}??", (255, 120, 120)
+            return san, (220, 220, 220)
 
         try:
             anchor_ply = 1 if var_base <= 0 else int(var_base)
@@ -10133,9 +11639,23 @@ class Engine:
                     y2 = int(y0)
                     max_x2 = int(bottom_rect.right - pad)
                     row_h2 = self.eval_font.get_linesize() + 4
+
+                    # Small delete button next to the variation.
+                    try:
+                        del_surf = self.eval_font.render('x', False, (255, 140, 140))
+                        del_rect = pg.Rect(int(x2), int(y2 - 1), int(del_surf.get_width() + 10), int(row_h2))
+                        pg.draw.rect(self.screen, (25, 25, 25), del_rect, border_radius=6)
+                        pg.draw.rect(self.screen, (110, 110, 110), del_rect, width=1, border_radius=6)
+                        self.screen.blit(del_surf, (del_rect.x + 5, del_rect.y + (del_rect.h - del_surf.get_height()) // 2))
+                        self._analysis_variation_delete_hitboxes.append((del_rect, int(var_base)))
+                        x2 = int(del_rect.right + 10)
+                    except Exception:
+                        x2 = int(x0 + prefix.get_width() + 10)
+
                     for j, san in enumerate(var_sans):
                         try:
-                            surf2 = self.eval_font.render(str(san), False, (220, 220, 220))
+                            txt2, col2b = decorate_var_san(int(j), str(san))
+                            surf2 = self.eval_font.render(str(txt2), False, col2b)
                         except Exception:
                             continue
                         if x2 + surf2.get_width() > max_x2 and x2 != int(x0):
@@ -10144,6 +11664,16 @@ class Engine:
                             if y2 + int(row_h2) > int(list_bottom):
                                 break
                         rect2 = pg.Rect(x2 - 2, y2 - 1, surf2.get_width() + 4, row_h2)
+
+                        # Highlight current variation cursor when actively viewing it.
+                        try:
+                            if bool(getattr(self, '_review_analysis_active', False)) and int(var_cursor_active) == int(j + 1):
+                                hi = pg.Surface((rect2.w, rect2.h), pg.SRCALPHA)
+                                hi.fill((120, 200, 255, 55))
+                                self.screen.blit(hi, (rect2.x, rect2.y))
+                        except Exception:
+                            pass
+
                         self.screen.blit(surf2, (x2, y2))
                         try:
                             fen_to = str(var_fens[j]) if 0 <= j < len(var_fens) else ''
@@ -10157,6 +11687,42 @@ class Engine:
                 pass
 
             fm += 1
+
+        # Footer nav buttons (◀ / ▶) at bottom of move list.
+        try:
+            btn_w = max(40, int(footer_h * 1.35))
+            btn_h = int(footer_h)
+            gap_btn = 12
+            total_w = int(btn_w * 2 + gap_btn)
+            bx = int(bottom_rect.centerx - total_w // 2)
+            by = int(footer_y)
+            prev_rect = pg.Rect(int(bx), int(by), int(btn_w), int(btn_h))
+            next_rect = pg.Rect(int(bx + btn_w + gap_btn), int(by), int(btn_w), int(btn_h))
+            self._analysis_movelist_prev_rect = prev_rect
+            self._analysis_movelist_next_rect = next_rect
+
+            try:
+                pg.draw.line(self.screen, (140, 140, 140), (bottom_rect.x + pad, footer_y - 3), (bottom_rect.right - pad, footer_y - 3), width=1)
+            except Exception:
+                pass
+
+            def draw_arrow_btn(r: pg.Rect, direction: str) -> None:
+                pg.draw.rect(self.screen, (25, 25, 25), r, border_radius=8)
+                pg.draw.rect(self.screen, (110, 110, 110), r, width=1, border_radius=8)
+                cx, cy = r.centerx, r.centery
+                sx = max(8, int(r.w * 0.18))
+                sy = max(8, int(r.h * 0.28))
+                if direction == 'left':
+                    pts = [(cx + sx, cy - sy), (cx + sx, cy + sy), (cx - sx, cy)]
+                else:
+                    pts = [(cx - sx, cy - sy), (cx - sx, cy + sy), (cx + sx, cy)]
+                pg.draw.polygon(self.screen, (220, 220, 220), pts)
+
+            draw_arrow_btn(prev_rect, 'left')
+            draw_arrow_btn(next_rect, 'right')
+        except Exception:
+            self._analysis_movelist_prev_rect = None
+            self._analysis_movelist_next_rect = None
 
         self._analysis_panel_rect = panel
 

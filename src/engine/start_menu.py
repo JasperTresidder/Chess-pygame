@@ -1,7 +1,7 @@
 import pygame_menu as pm
 from pygame_menu.controls import Controller
 
-from src.engine.settings import _make_settings_theme
+from src.engine.settings import _make_settings_theme, _apply_menu_resize, _menu_window_size_fallback
 
 
 class StartMenu(pm.menu.Menu):
@@ -33,6 +33,11 @@ class StartMenu(pm.menu.Menu):
         super().__init__(*args, **kwargs)
         self.screen = surface
         self.parent = parent
+        try:
+            self.o_size = self.screen.get_size()
+        except Exception:
+            self.o_size = (0, 0)
+        self.resized = False
 
         custom_controller = Controller()
         custom_controller.apply = self._btn_apply
@@ -261,7 +266,16 @@ class StartMenu(pm.menu.Menu):
 
     def run(self):
         self.enable()
-        self.mainloop(self.screen, fps_limit=120)
+        self.mainloop(self.screen, self.resize_event, fps_limit=120)
+
+    def resize_event(self):
+        try:
+            w, h = _menu_window_size_fallback(self.screen)
+            if (int(w), int(h)) != tuple(getattr(self, 'o_size', (0, 0))):
+                self.resized = True
+                _apply_menu_resize(self, int(w), int(h))
+        except Exception:
+            pass
 
     def _open_game_review(self, **kwargs):
         # Open the existing review-games menu.

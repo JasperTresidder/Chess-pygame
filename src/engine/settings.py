@@ -4,10 +4,122 @@ import threading
 import queue
 import tkinter as tk
 
+import pygame as pg
 import pygame_menu as pm
 from pygame_menu.controls import Controller
 
 from src.engine.perft import perft_nodes_from_fen_with_progress
+
+
+def _menu_window_size_fallback(surface) -> tuple[int, int]:
+    try:
+        return tuple(int(x) for x in pg.display.get_window_size())
+    except Exception:
+        try:
+            return surface.get_size()
+        except Exception:
+            return 800, 600
+
+
+def _apply_menu_resize(menu_obj, width: int | None = None, height: int | None = None) -> None:
+    """Resize the pygame display surface while a pygame-menu Menu is active.
+
+    pygame-menu won't call pg.display.set_mode for us; without that, widgets can disappear
+    after resizing the OS window.
+    """
+    try:
+        if width is None or height is None:
+            w, h = _menu_window_size_fallback(getattr(menu_obj, 'screen', None))
+        else:
+            w, h = int(width), int(height)
+    except Exception:
+        return
+
+    try:
+        old = getattr(menu_obj, 'o_size', None)
+        if old is not None and tuple(old) == (int(w), int(h)):
+            return
+    except Exception:
+        pass
+
+    try:
+        new_surface = pg.display.set_mode((int(w), int(h)), pg.RESIZABLE, vsync=1)
+    except Exception:
+        try:
+            new_surface = pg.display.set_mode((int(w), int(h)), pg.RESIZABLE)
+        except Exception:
+            return
+
+    try:
+        menu_obj.screen = new_surface
+    except Exception:
+        pass
+    try:
+        menu_obj._surface = new_surface
+    except Exception:
+        pass
+
+    def _refresh_engine_like(obj) -> None:
+        """Best-effort: keep the main game visuals/layout in sync with the resized display.
+
+        Important: do NOT call obj.check_resize() here; that calls settings.resize_event()
+        and can recurse while we're already handling a menu resize.
+        """
+        try:
+            if obj is None:
+                return
+        except Exception:
+            return
+
+        try:
+            if hasattr(obj, 'background'):
+                try:
+                    obj.background = pg.image.load('data/img/background_dark.png').convert()
+                    obj.background = pg.transform.smoothscale(obj.background, (int(w), int(h)))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        try:
+            if hasattr(obj, '_ensure_layout'):
+                obj._ensure_layout(force=True)
+        except Exception:
+            pass
+
+    # Propagate to parent/engine so the game doesn't come back in a broken layout.
+    try:
+        p = getattr(menu_obj, 'parent', None)
+        if p is not None and hasattr(p, 'screen'):
+            p.screen = new_surface
+            _refresh_engine_like(p)
+    except Exception:
+        pass
+    try:
+        eng = getattr(menu_obj, 'engine', None)
+        if eng is not None and hasattr(eng, 'screen'):
+            eng.screen = new_surface
+            _refresh_engine_like(eng)
+    except Exception:
+        pass
+
+    try:
+        menu_obj.resize(int(w), int(h))
+    except Exception:
+        pass
+    try:
+        menu_obj.render()
+    except Exception:
+        pass
+    try:
+        if hasattr(menu_obj, 'force_surface_cache_update'):
+            menu_obj.force_surface_cache_update()
+    except Exception:
+        pass
+    try:
+        menu_obj.o_size = (int(w), int(h))
+    except Exception:
+        pass
 
 
 def _set_theme_attr(theme: pm.themes.Theme, name: str, value) -> None:
@@ -503,11 +615,13 @@ class SettingsMenu(pm.menu.Menu):
         self.mainloop(self.screen, self.resize_event, fps_limit=120)
 
     def resize_event(self):
-        if self.screen.get_size() != self.o_size:
-            self.resized = True
-            self.resize(self.screen.get_width(), self.screen.get_height())
-            self.render()
-            self.o_size = self.screen.get_size()
+        try:
+            w, h = _menu_window_size_fallback(self.screen)
+            if (int(w), int(h)) != tuple(self.o_size):
+                self.resized = True
+                _apply_menu_resize(self, int(w), int(h))
+        except Exception:
+            pass
 
     def confirm(self):
         # Flush any pending autosave so the latest keystrokes are persisted.
@@ -683,12 +797,13 @@ class Controls(pm.menu.Menu):
         self.mainloop(self.screen, self.resize_event, fps_limit=120)
 
     def resize_event(self):
-        if self.screen.get_size() != self.o_size:
-            self.resized = True
-            self.resize(self.screen.get_width(), self.screen.get_height())
-            self.render()
-            self.force_surface_cache_update()
-            self.o_size = self.screen.get_size()
+        try:
+            w, h = _menu_window_size_fallback(self.screen)
+            if (int(w), int(h)) != tuple(self.o_size):
+                self.resized = True
+                _apply_menu_resize(self, int(w), int(h))
+        except Exception:
+            pass
 
     def btn_apply(self, event, ob):
         applied = event.key == 27
@@ -795,12 +910,13 @@ class PerftMenu(pm.menu.Menu):
 
     def resize_event(self):
         self._poll_perft_updates()
-        if self.screen.get_size() != self.o_size:
-            self.resized = True
-            self.resize(self.screen.get_width(), self.screen.get_height())
-            self.render()
-            self.force_surface_cache_update()
-            self.o_size = self.screen.get_size()
+        try:
+            w, h = _menu_window_size_fallback(self.screen)
+            if (int(w), int(h)) != tuple(self.o_size):
+                self.resized = True
+                _apply_menu_resize(self, int(w), int(h))
+        except Exception:
+            pass
 
     def _set_running_state(self, running: bool) -> None:
         self._perft_running = running
@@ -1048,12 +1164,13 @@ class GameReviewMenu(pm.menu.Menu):
         self.mainloop(self.screen, self.resize_event, fps_limit=120)
 
     def resize_event(self):
-        if self.screen.get_size() != self.o_size:
-            self.resized = True
-            self.resize(self.screen.get_width(), self.screen.get_height())
-            self.render()
-            self.force_surface_cache_update()
-            self.o_size = self.screen.get_size()
+        try:
+            w, h = _menu_window_size_fallback(self.screen)
+            if (int(w), int(h)) != tuple(self.o_size):
+                self.resized = True
+                _apply_menu_resize(self, int(w), int(h))
+        except Exception:
+            pass
 
     def load_game(self, **kwargs):
         if self.selector is None:
@@ -1161,12 +1278,13 @@ class EndGameMenu(pm.menu.Menu):
         os.system('notepad ' + self.file_path)
 
     def resize_event(self):
-        if self.screen.get_size() != self.o_size:
-            self.resized = True
-            self.resize(self.screen.get_width(), self.screen.get_height())
-            self.render()
-            self.force_surface_cache_update()
-            self.o_size = self.screen.get_size()
+        try:
+            w, h = _menu_window_size_fallback(self.screen)
+            if (int(w), int(h)) != tuple(self.o_size):
+                self.resized = True
+                _apply_menu_resize(self, int(w), int(h))
+        except Exception:
+            pass
 
     def btn_apply(self, event, ob):
         applied = event.key == 27
