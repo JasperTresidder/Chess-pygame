@@ -1,4 +1,5 @@
 import datetime
+import json
 import math
 import io
 import os
@@ -106,11 +107,35 @@ class Engine:
     def __init__(self):
         self.player_vs_ai = None
         self.ai_vs_ai = None
+
+        # Puzzle Rush mode state
+        self.puzzle_rush_active: bool = False
+        self._puzzle_rush_pack_path: str | None = None
+        self._puzzle_rush_puzzles: list[dict] = []
+        self._puzzle_rush_index: int = 0
+        self._puzzle_rush_solved: int = 0
+        self._puzzle_rush_strikes: int = 0
+        self._puzzle_rush_user_side: str = 'w'
+        self._puzzle_rush_expected_uci: list[str] = []
+        self._puzzle_rush_expected_i: int = 0
+        self._puzzle_rush_autoplay: bool = False
+        self._puzzle_rush_reply_delay_s: float = 0.5
+        self._puzzle_rush_reply_delay_fast_s: float = 0.05
+        self._puzzle_rush_pending_uci: str = ''
+        self._puzzle_rush_pending_due_ts: float | None = None
+        self._puzzle_rush_pending_advance: int = 0
+        self._puzzle_rush_results: list[tuple[int, bool]] = []  # (rating, success)
+        self._puzzle_rush_current_rating: int = 0
+        self._puzzle_rush_highscore: int = 0
+        self._puzzle_rush_highscore_path: str = os.path.join('data', 'settings', 'puzzle_rush_highscore.txt')
         self.evaluation = ''
         self.best_move = ''
         self.end_popup_active = False
         self.end_popup_text = ''
         self.end_popup_pgn_path: str | None = None
+
+        # Premove UX
+        self._premove_autoplay: bool = False
 
         # Review / replay state
         self.review_active = False
@@ -559,6 +584,12 @@ class Engine:
         # Kick off initial evaluation
         self.request_eval()
 
+        # Load Puzzle Rush highscore
+        try:
+            self._puzzle_rush_highscore = int(self._puzzle_rush_load_highscore() or 0)
+        except Exception:
+            self._puzzle_rush_highscore = 0
+
         # Show a start popup on first frame.
         self._start_menu_shown = False
 
@@ -569,6 +600,12 @@ class Engine:
         Since the start menu can change those defaults after Engine init, we must
         recreate the SettingsMenu on each open to avoid showing stale values.
         """
+        was_puzzle_rush = False
+        try:
+            was_puzzle_rush = bool(getattr(self, 'puzzle_rush_active', False))
+        except Exception:
+            was_puzzle_rush = False
+
         try:
             self.settings = SettingsMenu(
                 title='Settings',
@@ -583,6 +620,15 @@ class Engine:
 
         try:
             self.settings.run()
+        except Exception:
+            pass
+
+        # If settings applied a mode change unintentionally, restore Puzzle Rush.
+        try:
+            if was_puzzle_rush and (not bool(getattr(self, 'puzzle_rush_active', False))):
+                self.puzzle_rush_active = True
+                self.player_vs_ai = False
+                self.ai_vs_ai = False
         except Exception:
             pass
 
@@ -727,7 +773,8 @@ class Engine:
 
     def _build_virtual_player_piece_map(self) -> dict[tuple[int, int], Piece]:
         """Map virtual squares -> player's Piece objects (after applying queued premoves)."""
-        side = self._player_side()
+        # Use premove player side so Puzzle Rush (where the user can be Black) works correctly.
+        side = self._premove_player_side()
         pos_by_piece: dict[Piece, tuple[int, int]] = {}
         sq_to_piece: dict[tuple[int, int], Piece] = {}
 
@@ -979,6 +1026,26 @@ class Engine:
     def _player_side(self) -> str:
         return self.player_colour if self.player_colour in ('w', 'b') else 'w'
 
+    def _premove_player_side(self) -> str:
+        if getattr(self, 'puzzle_rush_active', False):
+            s = str(getattr(self, '_puzzle_rush_user_side', 'w') or 'w')
+            return 'b' if s == 'b' else 'w'
+        return self._player_side()
+
+    def _premove_ai_side(self) -> str:
+        s = self._premove_player_side()
+        return 'b' if s == 'w' else 'w'
+
+    def _premove_mode_active(self) -> bool:
+        if self.review_active or getattr(self, 'analysis_active', False) or self.end_popup_active:
+            return False
+        if not (self.player_vs_ai or getattr(self, 'puzzle_rush_active', False)):
+            return False
+        try:
+            return str(self.turn) == self._premove_ai_side()
+        except Exception:
+            return False
+
     @staticmethod
     def _format_clock(seconds: float) -> str:
         try:
@@ -1038,6 +1105,8 @@ class Engine:
         self._clock_last_ts = time.time()
 
     def _tick_clock(self) -> None:
+        if getattr(self, 'puzzle_rush_active', False):
+            return
         if not self._clock_running:
             return
         if self.review_active or self.end_popup_active or self.game_just_ended:
@@ -1085,6 +1154,8 @@ class Engine:
         self._clock_last_ts = time.time()
 
     def _draw_clocks(self) -> None:
+        if getattr(self, 'puzzle_rush_active', False):
+            return
         if self.review_active or self.analysis_active:
             return
         try:
@@ -1188,9 +1259,9 @@ class Engine:
 
         Premove is allowed only while waiting for the AI (Player vs AI, black to move).
         """
-        if not self.player_vs_ai or self.review_active or self.end_popup_active:
+        if not (self.player_vs_ai or getattr(self, 'puzzle_rush_active', False)) or self.review_active or self.end_popup_active:
             return
-        if self.turn != self._ai_side():
+        if self.turn != self._premove_ai_side():
             return
 
         # Ignore drops outside the board.
@@ -1225,7 +1296,8 @@ class Engine:
             # If we can't validate, be conservative.
             return
         # Only premove your own pieces.
-        if getattr(piece, 'colour', '')[:1] != ('w' if self._player_side() == 'w' else 'b'):
+        player_side = self._premove_player_side()
+        if getattr(piece, 'colour', '')[:1] != ('w' if player_side == 'w' else 'b'):
             return
         # Allow premoving onto squares currently occupied by your own pieces.
         # The premove will only execute if legal once the opponent moves.
@@ -1252,9 +1324,17 @@ class Engine:
         self._rebuild_premove_visuals()
         self._play_premove_sound()
 
+        # Puzzle Rush: if a delayed computer move is pending, make it very fast when the user premoves.
+        try:
+            if getattr(self, 'puzzle_rush_active', False) and str(getattr(self, '_puzzle_rush_pending_uci', '') or ''):
+                fast = float(getattr(self, '_puzzle_rush_reply_delay_fast_s', 0.05) or 0.05)
+                self._puzzle_rush_pending_due_ts = float(time.time()) + max(0.0, float(fast))
+        except Exception:
+            pass
+
     def _apply_premove_if_legal(self) -> None:
         """If the next premove is queued and is legal now, apply it. Otherwise discard all."""
-        if not self.player_vs_ai or self.review_active or self.end_popup_active:
+        if not (self.player_vs_ai or getattr(self, 'puzzle_rush_active', False)) or self.review_active or self.end_popup_active:
             self._clear_premove()
             return
         if self.ai_thinking:
@@ -1262,7 +1342,7 @@ class Engine:
         if not getattr(self, '_premove_queue', None):
             return
         # Only apply when it's the player's turn.
-        if self.turn != self._player_side():
+        if self.turn != self._premove_player_side():
             return
 
         fen = ''
@@ -1316,15 +1396,19 @@ class Engine:
         except Exception:
             pass
 
-        self.engine_make_move(uci)
+        self._premove_autoplay = True
+        try:
+            self.engine_make_move(uci)
+        finally:
+            self._premove_autoplay = False
         try:
             self._premove_queue.pop(0)
         except Exception:
             self._premove_queue = []
         self._rebuild_premove_visuals()
 
-        # After a successful premove, immediately request the AI reply.
-        if not self.end_popup_active and not self.game_just_ended:
+        # After a successful premove, immediately request the AI reply (PvAI only).
+        if self.player_vs_ai and (not self.end_popup_active) and (not self.game_just_ended):
             self._request_ai_move_async()
 
     def _ensure_ai_thread(self) -> None:
@@ -4225,6 +4309,8 @@ class Engine:
 
     def request_eval(self) -> None:
         """Queue an async evaluation of the current position."""
+        if getattr(self, 'puzzle_rush_active', False):
+            return
         if not self.eval_bar_enabled:
             return
         if not self._ensure_eval_engine():
@@ -4383,8 +4469,8 @@ class Engine:
 
         target_row, target_col = target
 
-        premove_mode = bool(self.player_vs_ai and self.turn == self._ai_side() and not self.review_active and not self.end_popup_active)
-        active_colour = self._player_side() if premove_mode else self.turn
+        premove_mode = bool(self._premove_mode_active())
+        active_colour = self._premove_player_side() if premove_mode else self.turn
 
         # First click: select a piece
         if self.selected_square is None:
@@ -4537,6 +4623,14 @@ class Engine:
             self._poll_ai_result()
         except Exception:
             pass
+
+        # Puzzle Rush: apply any scheduled computer move when its delay elapses.
+        try:
+            if getattr(self, 'puzzle_rush_active', False):
+                self._puzzle_rush_pump_pending()
+        except Exception:
+            pass
+
         self._ensure_layout()
         # Clear the entire frame first. Without this, pixels outside the board (e.g. review/analysis
         # panels) can remain visible when switching modes or returning from menus.
@@ -4552,19 +4646,14 @@ class Engine:
         # Draw BEFORE pieces so indicators don't cover capture targets.
         if self.movement_click_enabled and self.selected_square is not None and not self.updates:
             try:
-                premove_mode = bool(
-                    self.player_vs_ai
-                    and self.turn == self._ai_side()
-                    and not self.review_active
-                    and not getattr(self, 'analysis_active', False)
-                    and not self.end_popup_active
-                )
-                active_colour = self._player_side() if premove_mode else self.turn
+                premove_mode = bool(self._premove_mode_active())
+                active_colour = self._premove_player_side() if premove_mode else self.turn
 
                 sel_row, sel_col = self.selected_square
-                sel_piece = self.board[sel_row][sel_col]
-                if sel_piece == ' ' and premove_mode:
+                if premove_mode:
                     sel_piece = self._virtual_player_piece_at(int(sel_row), int(sel_col))
+                else:
+                    sel_piece = self.board[sel_row][sel_col]
                 if sel_piece != ' ' and sel_piece is not None and sel_piece.colour[0] == active_colour:
                     if premove_mode:
                         old_pos = list(getattr(sel_piece, 'legal_positions', []) or [])
@@ -4610,7 +4699,10 @@ class Engine:
 
         # Top-most overlays (must render after pieces/arrows).
         if not self.review_active and not self.analysis_active and not self.end_popup_active:
-            self._draw_game_movelist_overlay()
+            if getattr(self, 'puzzle_rush_active', False):
+                self._draw_puzzle_rush_overlay()
+            else:
+                self._draw_game_movelist_overlay()
         if self.review_active:
             self._draw_review_move_quality_marker()
             self._draw_review_overlay()
@@ -5328,28 +5420,33 @@ class Engine:
                 if event.key == pg.K_r and pg.key.get_mods() & pg.KMOD_CTRL:
                     self.flip_board()
                 if event.key == pg.K_h and pg.key.get_mods() & pg.KMOD_CTRL:
-                    # Hint: temporarily ask for a strong move, then restore configured Elo strength.
-                    with self._play_engine_lock:
-                        try:
-                            self.stockfish.update_engine_parameters({"UCI_LimitStrength": "false"})
-                        except Exception:
-                            pass
-                        try:
-                            self.stockfish.set_skill_level(20)
-                        except Exception:
-                            pass
+                    # Hints are disabled in Puzzle Rush.
+                    if bool(getattr(self, 'puzzle_rush_active', False)):
+                        self.best_move = ''
+                        self.hint_arrow = None
+                    else:
+                        # Hint: temporarily ask for a strong move, then restore configured Elo strength.
+                        with self._play_engine_lock:
+                            try:
+                                self.stockfish.update_engine_parameters({"UCI_LimitStrength": "false"})
+                            except Exception:
+                                pass
+                            try:
+                                self.stockfish.set_skill_level(20)
+                            except Exception:
+                                pass
 
-                        best = self.stockfish.get_best_move_time(200)
-                    self.best_move = str(best) if best else ''
-                    if best and len(best) >= 4:
-                        try:
-                            start_sq = square_on(best[0:2])
-                            end_sq = square_on(best[2:4])
-                            self.hint_arrow = (start_sq, end_sq)
-                        except Exception:
-                            self.hint_arrow = None
-                    with self._play_engine_lock:
-                        self._apply_ai_strength()
+                            best = self.stockfish.get_best_move_time(200)
+                        self.best_move = str(best) if best else ''
+                        if best and len(best) >= 4:
+                            try:
+                                start_sq = square_on(best[0:2])
+                                end_sq = square_on(best[2:4])
+                                self.hint_arrow = (start_sq, end_sq)
+                            except Exception:
+                                self.hint_arrow = None
+                        with self._play_engine_lock:
+                            self._apply_ai_strength()
                 if event.key == pg.K_u:
                     try:
                         self._handle_undo_pressed()
@@ -5451,8 +5548,8 @@ class Engine:
                 col = piece.position[1]
                 if self.board[row][col] != ' ':
                     if self.board[row][col].clicked:
-                        # If it's the AI's turn in Player vs AI, treat this as a premove.
-                        if self.player_vs_ai and self.turn == self._ai_side() and not self.end_popup_active:
+                        # If it's the opponent's turn (PvAI or Puzzle Rush), treat this as a premove.
+                        if self._premove_mode_active():
                             try:
                                 x = int((pg.mouse.get_pos()[0] - self.offset[0]) // self.size)
                                 y = int((pg.mouse.get_pos()[1] - self.offset[1]) // self.size)
@@ -5768,6 +5865,10 @@ class Engine:
         :param mode: String of the mode: 'pvp', 'pvai', or 'aivai'
         :return: None
         """
+        # Any non-rush mode disables Puzzle Rush state.
+        if mode != 'puzzlerush':
+            self.puzzle_rush_active = False
+
         if mode == 'pvp':
             self.ai_vs_ai = False
             self.player_vs_ai = False
@@ -5777,6 +5878,40 @@ class Engine:
         elif mode == 'pvai':
             self.ai_vs_ai = False
             self.player_vs_ai = True
+        elif mode == 'puzzlerush':
+            self.ai_vs_ai = False
+            self.player_vs_ai = False
+            self.puzzle_rush_active = True
+
+    def start_puzzle_rush_new(self) -> None:
+        """Start a new Puzzle Rush run (separate from the normal mode dropdown)."""
+        try:
+            if getattr(self, 'review_active', False):
+                self.exit_review(return_to_start_menu=False)
+        except Exception:
+            pass
+        try:
+            self.analysis_active = False
+        except Exception:
+            pass
+
+        try:
+            self.change_mode('puzzlerush')
+        except Exception:
+            self.puzzle_rush_active = True
+            self.player_vs_ai = False
+            self.ai_vs_ai = False
+
+        # No clocks in Puzzle Rush.
+        try:
+            self._clock_running = False
+        except Exception:
+            pass
+
+        try:
+            self.reset_game()
+        except Exception:
+            pass
 
     def ai_make_move(self, y: int, row: int, col: int):
         """
@@ -6113,8 +6248,35 @@ class Engine:
         :return: None
         """
         self.prev_board = self.board
-        self.selected_square = None
+        # Clear hint arrow after any move.
         self.hint_arrow = None
+
+        # If the user was click-selecting a piece during premove mode (opponent to move),
+        # keep that selection when the opponent moves so the user can still complete the
+        # click-click premove/instant reply instead of losing the highlighted legal moves.
+        keep_selection = False
+        try:
+            if self.selected_square is not None and (self.player_vs_ai or getattr(self, 'puzzle_rush_active', False)):
+                mover = 'b' if str(self.turn) == 'w' else 'w'
+                if bool(getattr(self, '_premove_autoplay', False)):
+                    # A queued premove just auto-applied. If we're back to premove-mode now
+                    # (opponent to move again), preserve the user's selection so dots stay visible.
+                    if bool(self._premove_mode_active()):
+                        r, c = self.selected_square
+                        p = self._virtual_player_piece_at(int(r), int(c))
+                        if p is not None and p != ' ' and getattr(p, 'colour', [''])[0] == self._premove_player_side():
+                            keep_selection = True
+                elif mover == self._premove_ai_side():
+                    r, c = self.selected_square
+                    # Selection may refer to the *virtual* premove position (especially with >1 premove).
+                    # Use the virtual board so we don't drop selection just because the real board differs.
+                    p = self._virtual_player_piece_at(int(r), int(c))
+                    if p is not None and p != ' ' and getattr(p, 'colour', [''])[0] == str(self.turn):
+                        keep_selection = True
+        except Exception:
+            keep_selection = False
+        if not keep_selection:
+            self.selected_square = None
 
         # Apply increment to the side that just moved.
         try:
@@ -6213,40 +6375,70 @@ class Engine:
         # async eval update
         self.request_eval()
         # print(self.game_fens[-1])
+
+        # Puzzle Rush: validate against the expected line and avoid normal game-over logic.
+        # (Many puzzles end in mate, which would otherwise trigger end_game and stop the run.)
+        if getattr(self, 'puzzle_rush_active', False):
+            try:
+                uci = str(self.last_move[-1]) if self.last_move else ''
+            except Exception:
+                uci = ''
+            try:
+                mover = 'b' if self.turn == 'w' else 'w'
+            except Exception:
+                mover = 'w'
+            try:
+                self._puzzle_rush_on_move(mover=mover, uci=uci)
+            except Exception:
+                pass
+            return
+
         if not self.player_vs_ai and not self.ai_vs_ai and self.flip_enabled:
             self.flip_board()
 
-        if self.node.board().is_repetition():
+        b = None
+        try:
+            b = self.node.board()
+        except Exception:
+            try:
+                b = chess.Board(str(self.game_fens[-1] if self.game_fens else self._current_fen()))
+            except Exception:
+                b = None
+
+        if b is not None and b.is_repetition():
             if self.sound_enabled:
                 pg.mixer.music.load('data/sounds/mate.wav')
                 pg.mixer.music.play(1)
                 time.sleep(0.15)
                 pg.mixer.music.play(1)
             self.end_game("DRAW BY REPETITION")
-        elif self.node.board().is_stalemate():
+        elif b is not None and b.is_stalemate():
             if self.sound_enabled:
                 pg.mixer.music.load('data/sounds/mate.wav')
                 pg.mixer.music.play(1)
                 time.sleep(0.15)
                 pg.mixer.music.play(1)
             self.end_game("INSUFFICIENT MATERIAL")
-        elif self.node.board().is_insufficient_material():
+        elif b is not None and b.is_insufficient_material():
             if self.sound_enabled:
                 pg.mixer.music.load('data/sounds/mate.wav')
                 pg.mixer.music.play(1)
                 time.sleep(0.15)
                 pg.mixer.music.play(1)
             self.end_game("INSUFFICIENT MATERIAL")
-        elif self.node.board().is_checkmate() or legal_moves == 0:
+        elif (b is not None and b.is_checkmate()) or legal_moves == 0:
             if self.sound_enabled:
                 pg.mixer.music.load('data/sounds/mate.wav')
                 pg.mixer.music.play(1)
                 time.sleep(0.15)
                 pg.mixer.music.play(1)
-            if self.node.board().outcome().winner:
-                self.end_game("CHECKMATE WHITE WINS !!")
-            else:
-                self.end_game("CHECKMATE BLACK WINS !!")
+            try:
+                if b is not None and b.outcome() and b.outcome().winner is True:
+                    self.end_game("CHECKMATE WHITE WINS !!")
+                else:
+                    self.end_game("CHECKMATE BLACK WINS !!")
+            except Exception:
+                self.end_game("CHECKMATE")
         # pprint(self.board, indent=3)
 
     def end_game(self, end_text: str) -> None:
@@ -6278,6 +6470,16 @@ class Engine:
         Resets the game to the starting FEN position
         :return: None
         """
+        # Puzzle Rush has its own reset flow (random pack, then ordered puzzles).
+        if getattr(self, 'puzzle_rush_active', False):
+            try:
+                self._puzzle_rush_start_new_run()
+            except Exception:
+                # Fall back to normal reset if anything goes wrong.
+                self.puzzle_rush_active = False
+            else:
+                return
+
         # If the previous game ended, a reset should take the user back to the start setup.
         # The run-loop shows the StartMenu when _start_menu_shown is False.
         try:
@@ -6681,7 +6883,7 @@ class Engine:
 
     def _draw_game_action_buttons(self) -> None:
         """Draw small Undo/Resign buttons on the game screen."""
-        if self.end_popup_active or self.review_active:
+        if getattr(self, 'puzzle_rush_active', False) or self.end_popup_active or self.review_active:
             self._undo_btn_rect = None
             self._resign_btn_rect = None
             self._toggle_movelist_btn_rect = None
@@ -7520,14 +7722,8 @@ class Engine:
         :return: None
         """
         try:
-            premove_mode = bool(
-                self.player_vs_ai
-                and self.turn == self._ai_side()
-                and not self.review_active
-                and not getattr(self, 'analysis_active', False)
-                and not self.end_popup_active
-            )
-            active_colour = self._player_side() if premove_mode else self.turn
+            premove_mode = bool(self._premove_mode_active())
+            active_colour = self._premove_player_side() if premove_mode else self.turn
 
             if not self.flipped:
                 if -1 < self.tx < 8 and -1 < self.ty < 8:
@@ -7693,7 +7889,7 @@ class Engine:
         if not self.end_popup_active:
             self._settings_btn_rect = self._draw_settings_button((20, 20), size=34)
             # Eval bar: show only the bar; show numeric value on hover
-            if self.eval_bar_enabled:
+            if self.eval_bar_enabled and not getattr(self, 'puzzle_rush_active', False):
                 rect = self._draw_eval_bar()
                 if rect is not None and rect.collidepoint(pg.mouse.get_pos()):
                     value = self._format_eval_value()
@@ -7910,22 +8106,36 @@ class Engine:
         gap = 18
         y = box.y + box.h - btn_h - 22
         x0 = box.x + 20
-        btn_review = pg.Rect(x0, y, btn_w, btn_h)
-        btn_reset = pg.Rect(x0 + btn_w + gap, y, btn_w, btn_h)
+        rush = bool(getattr(self, 'puzzle_rush_active', False))
+        if rush:
+            btn_reset = pg.Rect(box.centerx - btn_w // 2, y, btn_w, btn_h)
+            for rect, label, bg in [
+                (btn_reset, 'Reset', (200, 0, 0)),
+            ]:
+                pg.draw.rect(self.screen, bg, rect, border_radius=8)
+                pg.draw.rect(self.screen, (30, 30, 30), rect, width=2, border_radius=8)
+                surf = self.eval_font.render(label, False, (0, 0, 0))
+                self.screen.blit(surf, (rect.x + (rect.w - surf.get_width()) // 2, rect.y + (rect.h - surf.get_height()) // 2))
+            self._end_popup_buttons = {
+                'reset': btn_reset,
+            }
+        else:
+            btn_review = pg.Rect(x0, y, btn_w, btn_h)
+            btn_reset = pg.Rect(x0 + btn_w + gap, y, btn_w, btn_h)
 
-        for rect, label, bg in [
-            (btn_review, 'Review', (100, 100, 100)),
-            (btn_reset, 'Reset', (200, 0, 0)),
-        ]:
-            pg.draw.rect(self.screen, bg, rect, border_radius=8)
-            pg.draw.rect(self.screen, (30, 30, 30), rect, width=2, border_radius=8)
-            surf = self.eval_font.render(label, False, (0, 0, 0) if bg != (100, 100, 100) else (0, 0, 0))
-            self.screen.blit(surf, (rect.x + (rect.w - surf.get_width()) // 2, rect.y + (rect.h - surf.get_height()) // 2))
+            for rect, label, bg in [
+                (btn_review, 'Review', (100, 100, 100)),
+                (btn_reset, 'Reset', (200, 0, 0)),
+            ]:
+                pg.draw.rect(self.screen, bg, rect, border_radius=8)
+                pg.draw.rect(self.screen, (30, 30, 30), rect, width=2, border_radius=8)
+                surf = self.eval_font.render(label, False, (0, 0, 0))
+                self.screen.blit(surf, (rect.x + (rect.w - surf.get_width()) // 2, rect.y + (rect.h - surf.get_height()) // 2))
 
-        self._end_popup_buttons = {
-            'review': btn_review,
-            'reset': btn_reset,
-        }
+            self._end_popup_buttons = {
+                'review': btn_review,
+                'reset': btn_reset,
+            }
 
     def _handle_end_popup_click(self, pos: tuple[int, int]) -> None:
         btns = getattr(self, '_end_popup_buttons', {})
@@ -12745,3 +12955,686 @@ class Engine:
 
     def flip_board(self):
         self.flipped = not self.flipped
+
+    def _draw_puzzle_rush_overlay(self) -> None:
+        """Puzzle Rush HUD: big score + per-puzzle tick/cross with rating (Chess.com style)."""
+        try:
+            win_w, win_h = self.screen.get_size()
+        except Exception:
+            return
+
+        margin = 14
+        x = int(win_w * 0.60) + margin
+        y = int(margin)
+        w = max(180, int(win_w * 0.40) - (margin * 2))
+        h = int(win_h - 2 * margin)
+        if w < 220:
+            x = margin
+            y = margin
+            w = max(220, win_w - 2 * margin)
+            h = max(140, int(win_h - 2 * margin))
+
+        panel = pg.Rect(int(x), int(y), int(w), int(h))
+        try:
+            bg = pg.Surface((panel.w, panel.h), pg.SRCALPHA)
+            bg.fill((0, 0, 0, 160))
+            self.screen.blit(bg, (panel.x, panel.y))
+            pg.draw.rect(self.screen, (140, 140, 140), panel, width=1, border_radius=6)
+        except Exception:
+            pass
+
+        # Big score
+        score = 0
+        try:
+            score = int(getattr(self, '_puzzle_rush_solved', 0) or 0)
+        except Exception:
+            score = 0
+
+        try:
+            big_font = getattr(self, '_puzzle_rush_big_font', None)
+            big_size = max(44, min(120, int(panel.h * 0.18)))
+            if big_font is None or int(getattr(self, '_puzzle_rush_big_font_size', 0) or 0) != int(big_size):
+                try:
+                    big_font = pg.font.SysFont('arial', int(big_size), bold=True)
+                except Exception:
+                    big_font = self.font
+                self._puzzle_rush_big_font = big_font
+                self._puzzle_rush_big_font_size = int(big_size)
+        except Exception:
+            big_font = self.font
+
+        try:
+            score_surf = big_font.render(str(score), True, (255, 255, 255))
+            self.screen.blit(score_surf, (panel.centerx - score_surf.get_width() // 2, panel.y + int(panel.h * 0.16)))
+        except Exception:
+            pass
+
+        # Highscore line
+        try:
+            hs = int(getattr(self, '_puzzle_rush_highscore', 0) or 0)
+        except Exception:
+            hs = 0
+        try:
+            hs_font = self.eval_font if hasattr(self, 'eval_font') else self.font
+            hs_surf = hs_font.render(f'High: {hs}', True, (200, 200, 200))
+            self.screen.blit(hs_surf, (panel.centerx - hs_surf.get_width() // 2, panel.y + int(panel.h * 0.16) + score_surf.get_height() + 6))
+        except Exception:
+            pass
+
+        # Attempt history (tick/cross + rating)
+        try:
+            results = list(getattr(self, '_puzzle_rush_results', []) or [])
+        except Exception:
+            results = []
+
+        # Layout grid below the big score.
+        top_y = panel.y + int(panel.h * 0.38)
+        inner_left = panel.x + 14
+        inner_right = panel.right - 14
+        avail_w = max(1, inner_right - inner_left)
+
+        icon_box = 18
+        cell_w = 56
+        cell_h = 44
+        gap_x = 10
+        gap_y = 10
+        per_row = max(1, int((avail_w + gap_x) // (cell_w + gap_x)))
+        per_row = min(9, per_row)
+
+        # Center the grid within the available width.
+        grid_w = int(per_row * cell_w + max(0, (per_row - 1)) * gap_x)
+        left_x = int(panel.x + (panel.w - grid_w) // 2)
+        left_x = max(int(inner_left), min(int(left_x), int(inner_right - grid_w)))
+
+        # Show the earliest results first, but clamp to what fits.
+        max_rows = max(1, int((panel.bottom - 16 - top_y + gap_y) // (cell_h + gap_y)))
+        max_cells = max(1, per_row * max_rows)
+        if len(results) > max_cells:
+            results = results[-max_cells:]
+
+        try:
+            small_font = getattr(self, '_puzzle_rush_small_font', None)
+            if small_font is None:
+                self._puzzle_rush_small_font = pg.font.SysFont('arial', 16, bold=True)
+            small_font = self._puzzle_rush_small_font
+        except Exception:
+            small_font = self.eval_font if hasattr(self, 'eval_font') else self.font
+
+        # Prefer a symbol-capable font for ✓/✗.
+        try:
+            icon_font = getattr(self, '_puzzle_rush_icon_font', None)
+            if icon_font is None:
+                self._puzzle_rush_icon_font = pg.font.SysFont('Segoe UI Symbol', 18, bold=True)
+            icon_font = self._puzzle_rush_icon_font
+        except Exception:
+            icon_font = small_font
+
+        for i, (rating, ok) in enumerate(results):
+            row = i // per_row
+            col = i % per_row
+            cx = left_x + col * (cell_w + gap_x)
+            cy = top_y + row * (cell_h + gap_y)
+            if cy + cell_h > panel.bottom - 10:
+                break
+
+            color = (40, 200, 40) if ok else (220, 60, 60)
+            # Icon box
+            rect = pg.Rect(int(cx + (cell_w - icon_box) // 2), int(cy), int(icon_box), int(icon_box))
+            try:
+                pg.draw.rect(self.screen, (20, 20, 20), rect, border_radius=4)
+                pg.draw.rect(self.screen, color, rect, width=2, border_radius=4)
+            except Exception:
+                pass
+
+            glyph = '✓' if ok else '✗'
+            try:
+                gsurf = icon_font.render(glyph, True, color)
+                self.screen.blit(gsurf, (rect.centerx - gsurf.get_width() // 2, rect.centery - gsurf.get_height() // 2))
+            except Exception:
+                try:
+                    gsurf = small_font.render('OK' if ok else 'X', True, color)
+                    self.screen.blit(gsurf, (rect.centerx - gsurf.get_width() // 2, rect.centery - gsurf.get_height() // 2))
+                except Exception:
+                    pass
+
+            # Rating below
+            try:
+                r = int(rating)
+            except Exception:
+                r = 0
+            try:
+                rsurf = small_font.render(str(r), True, color)
+                self.screen.blit(rsurf, (cx + (cell_w - rsurf.get_width()) // 2, cy + icon_box + 6))
+            except Exception:
+                pass
+
+    # -----------------
+    # Puzzle Rush mode
+    # -----------------
+
+    @staticmethod
+    def _normalize_fen_6_fields(fen: str) -> str:
+        s = str(fen or '').strip()
+        parts = s.split()
+        if len(parts) == 4:
+            return s + ' 0 1'
+        if len(parts) == 5:
+            return s + ' 1'
+        return s
+
+    @staticmethod
+    def _puzzle_rush_user_side_from_entry(entry: dict) -> str:
+        v = str(entry.get('colorOfUser', '') or '').strip().lower()
+        # data uses "white"/"black"
+        return 'b' if v.startswith('b') else 'w'
+
+    @staticmethod
+    def _puzzle_rush_parse_pgn_headers(pgn_text: str) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        for line in str(pgn_text or '').splitlines():
+            line = line.strip()
+            if not line.startswith('[') or '"' not in line:
+                continue
+            m = re.match(r'^\[(\w+)\s+"(.*)"\]$', line)
+            if not m:
+                continue
+            headers[m.group(1)] = m.group(2)
+        return headers
+
+    @staticmethod
+    def _puzzle_rush_san_tokens_from_full(full: str) -> list[str]:
+        s = str(full or '').strip()
+        if not s:
+            return []
+
+        # Remove move numbers like "9." and "1..."
+        s = re.sub(r'\b\d+\.(\.\.)?\b', ' ', s)
+        s = s.replace('...', ' ')
+        toks = [t.strip() for t in s.split() if t.strip()]
+        # Drop result tokens if present
+        toks = [t for t in toks if t not in ('1-0', '0-1', '*')]
+        return toks
+
+    def _puzzle_rush_load_highscore(self) -> int:
+        try:
+            path = str(getattr(self, '_puzzle_rush_highscore_path', '') or '')
+        except Exception:
+            path = ''
+        if not path:
+            return 0
+        try:
+            if not os.path.exists(path):
+                return 0
+        except Exception:
+            return 0
+        try:
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                raw = f.read().strip()
+            return max(0, int(raw or '0'))
+        except Exception:
+            return 0
+
+    def _puzzle_rush_save_highscore(self, value: int) -> None:
+        try:
+            path = str(getattr(self, '_puzzle_rush_highscore_path', '') or '')
+        except Exception:
+            path = ''
+        if not path:
+            return
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+        except Exception:
+            pass
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(str(int(max(0, int(value)))))
+        except Exception:
+            pass
+
+    def _puzzle_rush_update_highscore(self) -> None:
+        try:
+            score = int(getattr(self, '_puzzle_rush_solved', 0) or 0)
+        except Exception:
+            score = 0
+        try:
+            hs = int(getattr(self, '_puzzle_rush_highscore', 0) or 0)
+        except Exception:
+            hs = 0
+        if score > hs:
+            self._puzzle_rush_highscore = int(score)
+            try:
+                self._puzzle_rush_save_highscore(int(score))
+            except Exception:
+                pass
+
+    def _puzzle_rush_play_result_sound(self, ok: bool) -> None:
+        if not self.sound_enabled:
+            return
+        try:
+            path = 'data/sounds/result-good.mp3' if bool(ok) else 'data/sounds/incorrect.mp3'
+            pg.mixer.music.load(path)
+            pg.mixer.music.play(1)
+        except Exception:
+            pass
+
+    def _puzzle_rush_expected_uci_from_entry(self, entry: dict) -> tuple[str, list[str]]:
+        """Return (start_fen, uci_line) for the puzzle, best-effort."""
+        pgn_text = str(entry.get('pgn', '') or '')
+        headers = self._puzzle_rush_parse_pgn_headers(pgn_text)
+
+        fen = str(entry.get('initialFen') or '').strip() or str(headers.get('FEN', '') or '').strip()
+        fen = self._normalize_fen_6_fields(fen)
+
+        # Preferred: parse the PGN mainline directly (handles messy movetext/variations).
+        # We patch the PGN's FEN header to a 6-field FEN so python-chess won't reject it.
+        uci_line: list[str] = []
+        try:
+            if pgn_text.strip():
+                patched = pgn_text
+                if '[FEN ' in patched:
+                    patched = re.sub(r'^\[FEN\s+".*"\]$', f'[FEN "{fen}"]', patched, flags=re.MULTILINE)
+                else:
+                    # Inject minimal setup headers if missing.
+                    injected = [
+                        '[SetUp "1"]',
+                        f'[FEN "{fen}"]',
+                        '',
+                    ]
+                    patched = '\n'.join(injected) + patched
+
+                game = chess.pgn.read_game(io.StringIO(patched))
+                if game is not None:
+                    for mv in game.mainline_moves():
+                        try:
+                            uci_line.append(mv.uci())
+                        except Exception:
+                            pass
+        except Exception:
+            uci_line = []
+
+        # Fallback: use header-provided SAN line if PGN parsing didn't yield moves.
+        if not uci_line:
+            san_line: list[str] = []
+            if 'Tactic_line' in headers and str(headers.get('Tactic_line') or '').strip():
+                san_line = [t for t in str(headers['Tactic_line']).split() if t.strip()]
+            elif 'FULL' in headers and str(headers.get('FULL') or '').strip():
+                san_line = self._puzzle_rush_san_tokens_from_full(str(headers['FULL']))
+
+            try:
+                b = chess.Board(str(fen))
+                for san in san_line:
+                    try:
+                        mv = b.parse_san(san)
+                    except Exception:
+                        # Skip any odd tokens rather than failing the entire puzzle.
+                        continue
+                    uci_line.append(mv.uci())
+                    b.push(mv)
+            except Exception:
+                uci_line = []
+
+        return str(fen), uci_line
+
+    def _puzzle_rush_last_pack_state_path(self) -> str:
+        return os.path.join('data', 'settings', 'puzzle_rush_last_pack.txt')
+
+    def _puzzle_rush_load_last_pack_index(self) -> int | None:
+        try:
+            path = self._puzzle_rush_last_pack_state_path()
+            if not os.path.isfile(path):
+                return None
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                raw = str(f.read() or '').strip()
+            idx = int(raw)
+            if 0 <= idx <= 500:
+                return idx
+            return None
+        except Exception:
+            return None
+
+    def _puzzle_rush_save_last_pack_index(self, idx: int) -> None:
+        try:
+            idx = int(idx)
+        except Exception:
+            return
+        if idx < 0 or idx > 500:
+            return
+        try:
+            path = self._puzzle_rush_last_pack_state_path()
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(str(idx))
+        except Exception:
+            pass
+
+    def _puzzle_rush_pick_next_pack(self) -> str | None:
+        """Pick the next pack in sequence: 0.json -> 1.json -> ... -> 500.json -> 0.json.
+
+        If some indices are missing, it scans forward (wrapping) to the next existing file.
+        """
+        try:
+            base = os.path.join('data', 'puzzle-rush')
+            if not os.path.isdir(base):
+                return None
+
+            max_idx = 499
+            last = self._puzzle_rush_load_last_pack_index()
+            start = 0 if last is None else (int(last) + 1) % (max_idx + 1)
+
+            for offset in range(max_idx + 1):
+                idx = (start + offset) % (max_idx + 1)
+                candidate = os.path.join(base, f'{idx}.json')
+                if os.path.isfile(candidate):
+                    self._puzzle_rush_save_last_pack_index(idx)
+                    return candidate
+
+            # Fallback: pick any JSON if naming doesn't match expected scheme.
+            files = [f for f in os.listdir(base) if f.lower().endswith('.json')]
+            if not files:
+                return None
+            files_sorted = sorted(files, key=lambda s: str(s).lower())
+            chosen = files_sorted[0]
+            m = re.match(r'^(\d+)\.json$', str(chosen).strip(), flags=re.IGNORECASE)
+            if m:
+                try:
+                    idx = int(m.group(1))
+                    self._puzzle_rush_save_last_pack_index(idx)
+                except Exception:
+                    pass
+            return os.path.join(base, chosen)
+        except Exception:
+            return None
+
+    def _puzzle_rush_start_new_run(self) -> None:
+        # Clear end popup if reset was pressed.
+        self.end_popup_active = False
+        self.end_popup_text = ''
+        self.end_popup_pgn_path = None
+        self.game_just_ended = False
+
+        self._puzzle_rush_strikes = 0
+        self._puzzle_rush_solved = 0
+        self._puzzle_rush_index = 0
+        self._puzzle_rush_expected_uci = []
+        self._puzzle_rush_expected_i = 0
+        self._puzzle_rush_results = []
+        self._puzzle_rush_current_rating = 0
+        self._puzzle_rush_pending_uci = ''
+        self._puzzle_rush_pending_due_ts = None
+        self._puzzle_rush_pending_advance = 0
+
+        # Ensure no hint visuals leak into Puzzle Rush.
+        self.best_move = ''
+        self.hint_arrow = None
+
+        pack = self._puzzle_rush_pick_next_pack()
+        self._puzzle_rush_pack_path = pack
+        if not pack:
+            self.end_popup_active = True
+            self.end_popup_text = 'Puzzle Rush: no packs found in data/puzzle-rush'
+            return
+
+        try:
+            with open(pack, 'r', encoding='utf-8', errors='ignore') as f:
+                puzzles = json.load(f)
+        except Exception:
+            puzzles = []
+
+        if not isinstance(puzzles, list) or not puzzles:
+            self.end_popup_active = True
+            self.end_popup_text = 'Puzzle Rush: failed to load puzzle pack'
+            return
+
+        # Pack is ordered easiest -> hardest already.
+        self._puzzle_rush_puzzles = puzzles
+
+        # Load first puzzle.
+        self._puzzle_rush_load_puzzle(self._puzzle_rush_index)
+
+    def _puzzle_rush_load_puzzle(self, idx: int) -> None:
+        if idx < 0 or idx >= len(self._puzzle_rush_puzzles or []):
+            # End of pack.
+            try:
+                self._puzzle_rush_update_highscore()
+            except Exception:
+                pass
+            self.end_popup_active = True
+            self.end_popup_text = f'Puzzle Rush complete. Solved: {self._puzzle_rush_solved}  Strikes: {self._puzzle_rush_strikes}/3'
+            return
+
+        entry = self._puzzle_rush_puzzles[idx]
+        if not isinstance(entry, dict):
+            # Skip invalid entry.
+            self._puzzle_rush_index = idx + 1
+            self._puzzle_rush_load_puzzle(self._puzzle_rush_index)
+            return
+
+        self._puzzle_rush_user_side = self._puzzle_rush_user_side_from_entry(entry)
+        try:
+            self._puzzle_rush_current_rating = int(entry.get('rating') or 0)
+        except Exception:
+            self._puzzle_rush_current_rating = 0
+        self.flipped = bool(self._puzzle_rush_user_side == 'b')
+
+        start_fen, uci_line = self._puzzle_rush_expected_uci_from_entry(entry)
+        start_fen = self._normalize_fen_6_fields(start_fen)
+        self._puzzle_rush_expected_uci = list(uci_line or [])
+        self._puzzle_rush_expected_i = 0
+        self._puzzle_rush_pending_uci = ''
+        self._puzzle_rush_pending_due_ts = None
+        self._puzzle_rush_pending_advance = 0
+
+        # Some pack entries can parse down to a single ply (only the forced starting computer move).
+        # That would auto-complete immediately after the computer move and feel like a bug.
+        # Skip such malformed entries without awarding a point or a strike.
+        try:
+            if len(self._puzzle_rush_expected_uci or []) < 2:
+                self._puzzle_rush_index = idx + 1
+                self._puzzle_rush_load_puzzle(self._puzzle_rush_index)
+                return
+        except Exception:
+            pass
+
+        # Ensure no hint visuals leak into Puzzle Rush.
+        self.best_move = ''
+        self.hint_arrow = None
+
+        # Reset UI/game state to this puzzle position.
+        self._load_fen_into_ui(start_fen)
+        self.game_fens = [str(start_fen)]
+        self.last_move = []
+        self._clear_premove()
+
+        # Fresh PGN container (we don't rely on it heavily, but node.board() is used elsewhere).
+        self.game = chess.pgn.Game()
+        try:
+            self.game.headers['Event'] = 'Puzzle Rush'
+            self.game.headers['PuzzlePack'] = os.path.basename(str(self._puzzle_rush_pack_path or ''))
+            self.game.headers['PuzzleIndex'] = str(int(idx))
+            if 'id' in entry:
+                self.game.headers['PuzzleId'] = str(entry.get('id'))
+        except Exception:
+            pass
+        self.node = self.game
+
+        # Apply the starting computer move (puzzle always starts with computer).
+        self._puzzle_rush_apply_computer_start_move()
+
+    def _puzzle_rush_schedule_computer_move(self, uci: str, advance: int) -> None:
+        """Schedule a computer move to be applied later without blocking the UI."""
+        try:
+            delay = float(getattr(self, '_puzzle_rush_reply_delay_s', 0.5) or 0.5)
+        except Exception:
+            delay = 0.5
+        try:
+            due = float(time.time()) + max(0.0, float(delay))
+        except Exception:
+            due = None
+        self._puzzle_rush_pending_uci = str(uci or '')
+        self._puzzle_rush_pending_due_ts = due
+        self._puzzle_rush_pending_advance = int(advance)
+
+    def _puzzle_rush_pump_pending(self) -> None:
+        """Apply a scheduled computer move if due (called each frame from run())."""
+        if self.end_popup_active or self.review_active or getattr(self, 'analysis_active', False):
+            return
+        uci = str(getattr(self, '_puzzle_rush_pending_uci', '') or '')
+        if not uci:
+            return
+        due = getattr(self, '_puzzle_rush_pending_due_ts', None)
+        if due is not None:
+            try:
+                if float(time.time()) < float(due):
+                    return
+            except Exception:
+                return
+
+        # Clear pending BEFORE applying, so re-entrancy can't replay it.
+        adv = int(getattr(self, '_puzzle_rush_pending_advance', 0) or 0)
+        self._puzzle_rush_pending_uci = ''
+        self._puzzle_rush_pending_due_ts = None
+        self._puzzle_rush_pending_advance = 0
+
+        self._puzzle_rush_autoplay = True
+        try:
+            self.last_move.append(uci)
+            self.node = self.node.add_variation(chess.Move.from_uci(uci))
+            self.engine_make_move(uci)
+        finally:
+            self._puzzle_rush_autoplay = False
+
+        # Advance expected index once the computer move is actually applied.
+        if adv:
+            try:
+                self._puzzle_rush_expected_i = int(self._puzzle_rush_expected_i) + int(adv)
+            except Exception:
+                self._puzzle_rush_expected_i = 0
+
+        # If a premove is queued, apply it immediately (no extra delay).
+        try:
+            idx_before = int(getattr(self, '_puzzle_rush_index', 0) or 0)
+        except Exception:
+            idx_before = 0
+        try:
+            self._apply_premove_if_legal()
+        except Exception:
+            pass
+        # If the premove advanced/ended the puzzle, don't double-advance below.
+        try:
+            if int(getattr(self, '_puzzle_rush_index', 0) or 0) != int(idx_before):
+                return
+        except Exception:
+            pass
+
+        # If that ended the sequence, advance immediately.
+        try:
+            if self._puzzle_rush_expected_i >= len(self._puzzle_rush_expected_uci or []):
+                try:
+                    self._puzzle_rush_play_result_sound(True)
+                except Exception:
+                    pass
+                self._puzzle_rush_results.append((int(getattr(self, '_puzzle_rush_current_rating', 0) or 0), True))
+                self._puzzle_rush_solved += 1
+                self._puzzle_rush_index += 1
+                self._puzzle_rush_load_puzzle(self._puzzle_rush_index)
+        except Exception:
+            pass
+
+    def _puzzle_rush_apply_computer_start_move(self) -> None:
+        if not self._puzzle_rush_expected_uci:
+            # No parseable solution line: do NOT skip forward (this caused score jumps).
+            # Stop with an explicit error so the pack can be improved.
+            self.end_popup_active = True
+            self.end_popup_text = 'Puzzle Rush: this puzzle has no parseable solution line'
+            return
+
+        user = self._puzzle_rush_user_side
+        computer = 'b' if user == 'w' else 'w'
+        try:
+            to_move = str(self.turn)
+        except Exception:
+            to_move = 'w'
+
+        if to_move != computer:
+            # Data is expected to be computer-to-move first; if it isn't, do not force an illegal move.
+            self._puzzle_rush_expected_i = 0
+            return
+
+        first = str(self._puzzle_rush_expected_uci[0])
+        # Schedule the move via the main loop to avoid freezing the UI.
+        self._puzzle_rush_schedule_computer_move(first, advance=1)
+
+    def _puzzle_rush_on_move(self, mover: str, uci: str) -> None:
+        """Called from moved() after any move while puzzle rush is active."""
+        if self._puzzle_rush_autoplay:
+            return
+
+        # Only validate the user's moves.
+        if mover != self._puzzle_rush_user_side:
+            return
+
+        # If we don't have an expected line, we can't validate.
+        if not self._puzzle_rush_expected_uci:
+            self.end_popup_active = True
+            self.end_popup_text = 'Puzzle Rush: this puzzle has no parseable solution line'
+            return
+
+        i = int(self._puzzle_rush_expected_i)
+        if i < 0 or i >= len(self._puzzle_rush_expected_uci):
+            # Already at end.
+            try:
+                self._puzzle_rush_results.append((int(getattr(self, '_puzzle_rush_current_rating', 0) or 0), True))
+            except Exception:
+                pass
+            self._puzzle_rush_solved += 1
+            self._puzzle_rush_index += 1
+            self._puzzle_rush_load_puzzle(self._puzzle_rush_index)
+            return
+
+        expected = str(self._puzzle_rush_expected_uci[i])
+        played = str(uci or '')
+
+        if played != expected:
+            self._puzzle_rush_strikes += 1
+            try:
+                self._puzzle_rush_play_result_sound(False)
+            except Exception:
+                pass
+            try:
+                self._puzzle_rush_results.append((int(getattr(self, '_puzzle_rush_current_rating', 0) or 0), False))
+            except Exception:
+                pass
+            if self._puzzle_rush_strikes >= 3:
+                try:
+                    self._puzzle_rush_update_highscore()
+                except Exception:
+                    pass
+                self.end_popup_active = True
+                self.end_popup_text = f'Puzzle Rush over. Solved: {self._puzzle_rush_solved}  Strikes: 3/3'
+                return
+            # Wrong move: advance to next puzzle.
+            self._puzzle_rush_index += 1
+            self._puzzle_rush_load_puzzle(self._puzzle_rush_index)
+            return
+
+        # Correct user move.
+        self._puzzle_rush_expected_i = i + 1
+
+        # If that finished the line, count as solved and advance.
+        if self._puzzle_rush_expected_i >= len(self._puzzle_rush_expected_uci):
+            try:
+                self._puzzle_rush_play_result_sound(True)
+            except Exception:
+                pass
+            try:
+                self._puzzle_rush_results.append((int(getattr(self, '_puzzle_rush_current_rating', 0) or 0), True))
+            except Exception:
+                pass
+            self._puzzle_rush_solved += 1
+            self._puzzle_rush_index += 1
+            self._puzzle_rush_load_puzzle(self._puzzle_rush_index)
+            return
+
+        # Schedule the computer reply if present (non-blocking).
+        comp_move = str(self._puzzle_rush_expected_uci[self._puzzle_rush_expected_i])
+        self._puzzle_rush_schedule_computer_move(comp_move, advance=1)

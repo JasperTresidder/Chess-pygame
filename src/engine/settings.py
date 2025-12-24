@@ -239,11 +239,13 @@ class SettingsMenu(pm.menu.Menu):
         new_game = add_action('New Game', self.new_game, (100, 100, 100))
         review = add_action('Review Games', self.view_games, (100, 100, 100))
         analysis = add_action('Analysis Mode', self.enter_analysis_mode, (100, 100, 100))
+        puzzle_rush = add_action('Puzzle Rush', self.enter_puzzle_rush_mode, (100, 100, 100))
         actions.pack(self.back)
         actions.pack(view, margin=(14, 0))
         actions.pack(new_game, margin=(14, 0))
         actions.pack(review, margin=(14, 0))
         actions.pack(analysis, margin=(14, 0))
+        actions.pack(puzzle_rush, margin=(14, 0))
         self.pieces = [
             ('Alila', 'alila'),
             ('Alpha', 'alpha'),
@@ -341,7 +343,14 @@ class SettingsMenu(pm.menu.Menu):
         left.pack(add_label('Gameplay', 26), margin=(0, 6))
 
         self.label1 = add_label('Game Mode', 22)
-        self.mode = self.add.dropselect('', self.modes, int(lines[0].replace('\n', '')),
+        try:
+            mode_index = int(str(lines[0]).replace('\n', '').strip() or '0')
+        except Exception:
+            mode_index = 0
+        if mode_index < 0 or mode_index >= len(self.modes):
+            mode_index = 0
+
+        self.mode = self.add.dropselect('', self.modes, int(mode_index),
                         selection_box_width=select_w,
                         selection_box_margin=(0, 0),
                         selection_option_font_size=20,
@@ -629,7 +638,16 @@ class SettingsMenu(pm.menu.Menu):
 
         chosen = self.piece.get_value()[0][1]
         self.parent.change_pieces(chosen)
-        self.parent.change_mode(self.mode.get_value()[0][1])
+        # If the Settings menu was opened while in Puzzle Rush, do not switch game mode
+        # (Puzzle Rush is entered via its own Start menu button).
+        try:
+            if not bool(getattr(self.parent, 'puzzle_rush_active', False)):
+                self.parent.change_mode(self.mode.get_value()[0][1])
+        except Exception:
+            try:
+                self.parent.change_mode(self.mode.get_value()[0][1])
+            except Exception:
+                pass
         self.parent.change_board(self.board.get_value()[0][1])
         self.parent.change_ai_elo(self.strength.get_value()[0][1])
         self.parent.flip_enable(int(self.flip.get_value()))
@@ -682,6 +700,22 @@ class SettingsMenu(pm.menu.Menu):
         except Exception:
             pass
 
+    def enter_puzzle_rush_mode(self, **kwargs):
+        """Apply settings and start a new Puzzle Rush run."""
+        try:
+            self.confirm()
+        except Exception:
+            try:
+                self.exit_menu()
+            except Exception:
+                pass
+
+        try:
+            if hasattr(self.parent, 'start_puzzle_rush_new'):
+                self.parent.start_puzzle_rush_new()
+        except Exception:
+            pass
+
     def new_game(self, **kwargs):
         """Apply settings and return to the Start menu to begin a new game."""
         # Save/apply settings and close the menu.
@@ -702,6 +736,19 @@ class SettingsMenu(pm.menu.Menu):
         try:
             if bool(getattr(self.parent, 'analysis_active', False)):
                 self.parent.exit_analysis(return_to_start_menu=False)
+        except Exception:
+            pass
+
+        # If we were in Puzzle Rush, ensure we fully leave it before resetting.
+        # Otherwise reset_game() would reuse the last puzzle's starting FEN.
+        try:
+            if bool(getattr(self.parent, 'puzzle_rush_active', False)):
+                self.parent.puzzle_rush_active = False
+                self.parent.player_vs_ai = False
+                self.parent.ai_vs_ai = False
+                self.parent.best_move = ''
+                self.parent.hint_arrow = None
+                self.parent.game_fens = ['rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1']
         except Exception:
             pass
 

@@ -192,6 +192,15 @@ class StartMenu(pm.menu.Menu):
         )
         self.review_btn.set_controller(custom_controller)
 
+        self.puzzle_rush_btn = self.add.button(
+            'Puzzle Rush',
+            self._start_puzzle_rush,
+            font_background_color=(100, 100, 100),
+            font_color=(0, 0, 0),
+            cursor=11,
+        )
+        self.puzzle_rush_btn.set_controller(custom_controller)
+
         self.analysis_btn = self.add.button(
             'Analysis Mode',
             self._start_analysis_mode,
@@ -303,6 +312,14 @@ class StartMenu(pm.menu.Menu):
         try:
             if hasattr(self.parent, 'start_analysis_new'):
                 self.parent.start_analysis_new()
+                self.disable()
+        except Exception:
+            pass
+
+    def _start_puzzle_rush(self, **kwargs):
+        try:
+            if hasattr(self.parent, 'start_puzzle_rush_new'):
+                self.parent.start_puzzle_rush_new()
                 self.disable()
         except Exception:
             pass
