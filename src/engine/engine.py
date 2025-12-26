@@ -124,10 +124,22 @@ class Engine:
         self._puzzle_rush_pending_uci: str = ''
         self._puzzle_rush_pending_due_ts: float | None = None
         self._puzzle_rush_pending_advance: int = 0
-        self._puzzle_rush_results: list[tuple[int, bool]] = []  # (rating, success)
+        # Result history items are dicts so we can later browse solutions from the HUD.
+        # Keys: rating:int, ok:bool, start_fen:str, uci:list[str], user_side:'w'|'b', pack:str
+        self._puzzle_rush_results: list[dict] = []
         self._puzzle_rush_current_rating: int = 0
+        self._puzzle_rush_current_start_fen: str = ''
         self._puzzle_rush_highscore: int = 0
         self._puzzle_rush_highscore_path: str = os.path.join('data', 'settings', 'puzzle_rush_highscore.txt')
+
+        # Puzzle Rush: browsing past puzzle solutions
+        self._puzzle_rush_solution_active: bool = False
+        self._puzzle_rush_solution_saved_state: dict | None = None
+        self._puzzle_rush_solution_index: int | None = None
+        self._puzzle_rush_solution_fens: list[str] = []
+        self._puzzle_rush_solution_cursor: int = 0
+        self._puzzle_rush_solution_back_rect = None
+        self._puzzle_rush_result_hitboxes: list[tuple[pg.Rect, int]] = []
         self.evaluation = ''
         self.best_move = ''
         self.end_popup_active = False
@@ -4626,7 +4638,7 @@ class Engine:
 
         # Puzzle Rush: apply any scheduled computer move when its delay elapses.
         try:
-            if getattr(self, 'puzzle_rush_active', False):
+            if getattr(self, 'puzzle_rush_active', False) and not bool(getattr(self, '_puzzle_rush_solution_active', False)):
                 self._puzzle_rush_pump_pending()
         except Exception:
             pass
@@ -4701,6 +4713,12 @@ class Engine:
         if not self.review_active and not self.analysis_active and not self.end_popup_active:
             if getattr(self, 'puzzle_rush_active', False):
                 self._draw_puzzle_rush_overlay()
+                # In solution view, also show the move list panel on the right.
+                try:
+                    if bool(getattr(self, '_puzzle_rush_solution_active', False)):
+                        self._draw_game_movelist_overlay()
+                except Exception:
+                    pass
             else:
                 self._draw_game_movelist_overlay()
         if self.review_active:
@@ -5231,18 +5249,104 @@ class Engine:
             # End-game popup: only popup controls.
             if self.end_popup_active:
                 if event.type == pg.KEYDOWN and event.key == pg.K_ESCAPE:
-                    # Reset on ESC for a quick exit.
-                    self.end_popup_active = False
-                    self.end_popup_text = ''
-                    self.end_popup_pgn_path = None
-                    self.reset_game()
+                    # In Puzzle Rush, allow closing the popup to browse past puzzles.
+                    if bool(getattr(self, 'puzzle_rush_active', False)):
+                        self.end_popup_active = False
+                        self.end_popup_text = ''
+                        self.end_popup_pgn_path = None
+                    else:
+                        # Reset on ESC for a quick exit.
+                        self.end_popup_active = False
+                        self.end_popup_text = ''
+                        self.end_popup_pgn_path = None
+                        self.reset_game()
                 elif event.type == pg.MOUSEBUTTONUP and event.button == 1:
                     self._handle_end_popup_click(pg.mouse.get_pos())
                 continue
 
-            elif event.type == pg.MOUSEBUTTONDOWN:
+            # Puzzle Rush solution view: navigation only (no moves).
+            try:
+                if bool(getattr(self, '_puzzle_rush_solution_active', False)) and bool(getattr(self, 'puzzle_rush_active', False)):
+                    if event.type == pg.KEYDOWN:
+                        if event.key == pg.K_ESCAPE:
+                            try:
+                                self._puzzle_rush_close_solution_view()
+                            except Exception:
+                                pass
+                            continue
+                        if event.key in (pg.K_LEFT, pg.K_RIGHT):
+                            try:
+                                cur = int(getattr(self, '_puzzle_rush_solution_cursor', 0) or 0)
+                            except Exception:
+                                cur = 0
+                            delta = -1 if event.key == pg.K_LEFT else 1
+                            try:
+                                self._puzzle_rush_solution_set_cursor(cur + delta)
+                            except Exception:
+                                pass
+                            continue
+            except Exception:
+                pass
+
+            if event.type == pg.MOUSEBUTTONDOWN:
                 self.game_just_ended = False
                 if event.button == 1 and not self.game_just_ended:
+                    # Puzzle Rush solution browse: allow Back + move list only.
+                    try:
+                        if bool(getattr(self, '_puzzle_rush_solution_active', False)) and bool(getattr(self, 'puzzle_rush_active', False)):
+                            r = getattr(self, '_puzzle_rush_solution_back_rect', None)
+                            if r is not None and r.collidepoint(event.pos):
+                                try:
+                                    self._puzzle_rush_close_solution_view()
+                                except Exception:
+                                    pass
+
+                                self.left = False
+                                self._mouse_down_pos = None
+                                self.updates = False
+                                self.selected_square = None
+                                continue
+
+                            try:
+                                if self._handle_game_movelist_click(event.pos):
+                                    self.left = False
+                                    self._mouse_down_pos = None
+                                    self.updates = False
+                                    self.selected_square = None
+                                    continue
+                            except Exception:
+                                pass
+
+                            # Consume all other clicks during solution review.
+                            self.left = False
+                            self._mouse_down_pos = None
+                            self.updates = False
+                            self.selected_square = None
+                            continue
+                    except Exception:
+                        pass
+
+                    # Puzzle Rush HUD clicks (result markers -> solution view)
+                    try:
+                        if bool(getattr(self, 'puzzle_rush_active', False)):
+                            handled = False
+                            for rect, idx in list(getattr(self, '_puzzle_rush_result_hitboxes', []) or []):
+                                try:
+                                    if rect is not None and rect.collidepoint(event.pos):
+                                        self._puzzle_rush_open_solution_view(int(idx))
+                                        handled = True
+                                        break
+                                except Exception:
+                                    continue
+                            if handled:
+                                self.left = False
+                                self._mouse_down_pos = None
+                                self.updates = False
+                                self.selected_square = None
+                                continue
+                    except Exception:
+                        pass
+
                     # Flip-board button (all modes).
                     try:
                         if self._flip_board_btn_rect is not None and self._flip_board_btn_rect.collidepoint(event.pos):
@@ -5326,6 +5430,15 @@ class Engine:
                         self.updates = True
                         self.selected_square = None
             elif event.type == pg.MOUSEBUTTONUP:
+                # Puzzle Rush solution browse is read-only.
+                try:
+                    if bool(getattr(self, '_puzzle_rush_solution_active', False)) and bool(getattr(self, 'puzzle_rush_active', False)):
+                        self.left = False
+                        self.updates = False
+                        self._mouse_down_pos = None
+                        continue
+                except Exception:
+                    pass
                 if event.button == 1 and getattr(self, '_board_resize_active', False):
                     self._handle_board_resize_end()
                     self.updates = False
@@ -7700,9 +7813,17 @@ class Engine:
         except Exception:
             pass
 
+        # Keep Puzzle Rush solution cursor synced with move-list browsing.
+        try:
+            if bool(getattr(self, '_puzzle_rush_solution_active', False)) and bool(getattr(self, 'puzzle_rush_active', False)):
+                self._puzzle_rush_solution_cursor = int(new)
+        except Exception:
+            pass
+
         # If we've returned to the latest position, leave browse mode so the user can play.
         try:
-            if int(new) >= int(len(self.game_fens) - 1):
+            # In Puzzle Rush solution review, never auto-exit browse mode.
+            if (not (bool(getattr(self, '_puzzle_rush_solution_active', False)) and bool(getattr(self, 'puzzle_rush_active', False)))) and int(new) >= int(len(self.game_fens) - 1):
                 self._exit_game_browse()
         except Exception:
             pass
@@ -8108,8 +8229,10 @@ class Engine:
         x0 = box.x + 20
         rush = bool(getattr(self, 'puzzle_rush_active', False))
         if rush:
-            btn_reset = pg.Rect(box.centerx - btn_w // 2, y, btn_w, btn_h)
+            btn_close = pg.Rect(box.centerx - btn_w - (gap // 2), y, btn_w, btn_h)
+            btn_reset = pg.Rect(box.centerx + (gap // 2), y, btn_w, btn_h)
             for rect, label, bg in [
+                (btn_close, 'Close', (100, 100, 100)),
                 (btn_reset, 'Reset', (200, 0, 0)),
             ]:
                 pg.draw.rect(self.screen, bg, rect, border_radius=8)
@@ -8117,6 +8240,7 @@ class Engine:
                 surf = self.eval_font.render(label, False, (0, 0, 0))
                 self.screen.blit(surf, (rect.x + (rect.w - surf.get_width()) // 2, rect.y + (rect.h - surf.get_height()) // 2))
             self._end_popup_buttons = {
+                'close': btn_close,
                 'reset': btn_reset,
             }
         else:
@@ -8140,6 +8264,11 @@ class Engine:
     def _handle_end_popup_click(self, pos: tuple[int, int]) -> None:
         btns = getattr(self, '_end_popup_buttons', {})
         if not btns:
+            return
+        if btns.get('close') and btns['close'].collidepoint(pos):
+            self.end_popup_active = False
+            self.end_popup_text = ''
+            self.end_popup_pgn_path = None
             return
         if btns.get('reset') and btns['reset'].collidepoint(pos):
             self.end_popup_active = False
@@ -12963,6 +13092,34 @@ class Engine:
         except Exception:
             return
 
+        # Solution review: show ONLY Back (no score/history panel).
+        self._puzzle_rush_solution_back_rect = None
+        try:
+            if bool(getattr(self, '_puzzle_rush_solution_active', False)):
+                btn_w = 140
+                btn_h = 38
+                btn = pg.Rect(int(win_w // 2 - btn_w // 2), int(14), int(btn_w), int(btn_h))
+                self._puzzle_rush_solution_back_rect = btn
+                hovered = False
+                try:
+                    hovered = btn.collidepoint(pg.mouse.get_pos())
+                except Exception:
+                    hovered = False
+                bgc = (120, 120, 120) if hovered else (100, 100, 100)
+                try:
+                    pg.draw.rect(self.screen, bgc, btn, border_radius=8)
+                    pg.draw.rect(self.screen, (30, 30, 30), btn, width=2, border_radius=8)
+                except Exception:
+                    pass
+                try:
+                    surf = (self.eval_font if hasattr(self, 'eval_font') else self.font).render('Back', False, (0, 0, 0))
+                    self.screen.blit(surf, (btn.x + (btn.w - surf.get_width()) // 2, btn.y + (btn.h - surf.get_height()) // 2))
+                except Exception:
+                    pass
+                return
+        except Exception:
+            self._puzzle_rush_solution_back_rect = None
+
         margin = 14
         x = int(win_w * 0.60) + margin
         y = int(margin)
@@ -12982,6 +13139,33 @@ class Engine:
             pg.draw.rect(self.screen, (140, 140, 140), panel, width=1, border_radius=6)
         except Exception:
             pass
+
+        # If browsing a past puzzle's solution, show a Back button.
+        self._puzzle_rush_solution_back_rect = None
+        try:
+            if bool(getattr(self, '_puzzle_rush_solution_active', False)):
+                btn_w = 140
+                btn_h = 38
+                btn = pg.Rect(panel.centerx - btn_w // 2, panel.y + 12, btn_w, btn_h)
+                self._puzzle_rush_solution_back_rect = btn
+                hovered = False
+                try:
+                    hovered = btn.collidepoint(pg.mouse.get_pos())
+                except Exception:
+                    hovered = False
+                bgc = (120, 120, 120) if hovered else (100, 100, 100)
+                try:
+                    pg.draw.rect(self.screen, bgc, btn, border_radius=8)
+                    pg.draw.rect(self.screen, (30, 30, 30), btn, width=2, border_radius=8)
+                except Exception:
+                    pass
+                try:
+                    surf = (self.eval_font if hasattr(self, 'eval_font') else self.font).render('Back', False, (0, 0, 0))
+                    self.screen.blit(surf, (btn.x + (btn.w - surf.get_width()) // 2, btn.y + (btn.h - surf.get_height()) // 2))
+                except Exception:
+                    pass
+        except Exception:
+            self._puzzle_rush_solution_back_rect = None
 
         # Big score
         score = 0
@@ -13023,9 +13207,24 @@ class Engine:
 
         # Attempt history (tick/cross + rating)
         try:
-            results = list(getattr(self, '_puzzle_rush_results', []) or [])
+            full_results = list(getattr(self, '_puzzle_rush_results', []) or [])
         except Exception:
-            results = []
+            full_results = []
+
+        # Reset hitboxes each frame.
+        self._puzzle_rush_result_hitboxes = []
+
+        # Normalize legacy tuple results -> dict.
+        results_norm: list[dict] = []
+        for r in full_results:
+            try:
+                if isinstance(r, dict):
+                    results_norm.append(r)
+                else:
+                    rating, ok = r
+                    results_norm.append({'rating': int(rating), 'ok': bool(ok)})
+            except Exception:
+                continue
 
         # Layout grid below the big score.
         top_y = panel.y + int(panel.h * 0.38)
@@ -13049,8 +13248,10 @@ class Engine:
         # Show the earliest results first, but clamp to what fits.
         max_rows = max(1, int((panel.bottom - 16 - top_y + gap_y) // (cell_h + gap_y)))
         max_cells = max(1, per_row * max_rows)
+        results = results_norm
         if len(results) > max_cells:
             results = results[-max_cells:]
+        offset = max(0, len(results_norm) - len(results))
 
         try:
             small_font = getattr(self, '_puzzle_rush_small_font', None)
@@ -13069,13 +13270,28 @@ class Engine:
         except Exception:
             icon_font = small_font
 
-        for i, (rating, ok) in enumerate(results):
+        for i, item in enumerate(results):
+            try:
+                ok = bool(item.get('ok'))
+            except Exception:
+                ok = False
+            try:
+                rating = int(item.get('rating') or 0)
+            except Exception:
+                rating = 0
             row = i // per_row
             col = i % per_row
             cx = left_x + col * (cell_w + gap_x)
             cy = top_y + row * (cell_h + gap_y)
             if cy + cell_h > panel.bottom - 10:
                 break
+
+            # Clickable area for this result cell.
+            try:
+                cell_rect = pg.Rect(int(cx), int(cy), int(cell_w), int(cell_h))
+                self._puzzle_rush_result_hitboxes.append((cell_rect, int(offset + i)))
+            except Exception:
+                pass
 
             color = (40, 200, 40) if ok else (220, 60, 60)
             # Icon box
@@ -13099,11 +13315,7 @@ class Engine:
 
             # Rating below
             try:
-                r = int(rating)
-            except Exception:
-                r = 0
-            try:
-                rsurf = small_font.render(str(r), True, color)
+                rsurf = small_font.render(str(int(rating)), True, color)
                 self.screen.blit(rsurf, (cx + (cell_w - rsurf.get_width()) // 2, cy + icon_box + 6))
             except Exception:
                 pass
@@ -13212,10 +13424,323 @@ class Engine:
             return
         try:
             path = 'data/sounds/result-good.mp3' if bool(ok) else 'data/sounds/incorrect.mp3'
-            pg.mixer.music.load(path)
-            pg.mixer.music.play(1)
+            # Use the music channel for SFX in this project; it is single-stream.
+            # If a move sound is already playing, queue the result sound so it plays second
+            # instead of interrupting the move.
+            if pg.mixer.music.get_busy():
+                try:
+                    pg.mixer.music.queue(path)
+                except Exception:
+                    # Fallback: interrupt if queue isn't available.
+                    pg.mixer.music.load(path)
+                    pg.mixer.music.play(1)
+            else:
+                pg.mixer.music.load(path)
+                pg.mixer.music.play(1)
         except Exception:
             pass
+
+    def _puzzle_rush_record_result(self, ok: bool) -> None:
+        """Append a result entry with enough data to later show the solution."""
+        try:
+            entry = {
+                'rating': int(getattr(self, '_puzzle_rush_current_rating', 0) or 0),
+                'ok': bool(ok),
+                'start_fen': str(getattr(self, '_puzzle_rush_current_start_fen', '') or ''),
+                'uci': list(getattr(self, '_puzzle_rush_expected_uci', []) or []),
+                'user_side': str(getattr(self, '_puzzle_rush_user_side', 'w') or 'w'),
+                'pack': os.path.basename(str(getattr(self, '_puzzle_rush_pack_path', '') or '')),
+            }
+        except Exception:
+            return
+        try:
+            self._puzzle_rush_results.append(entry)
+        except Exception:
+            try:
+                self._puzzle_rush_results = [entry]
+            except Exception:
+                pass
+
+    def _puzzle_rush_open_solution_view(self, result_index: int) -> None:
+        """Load the final solution position for a previously-attempted puzzle."""
+        if not bool(getattr(self, 'puzzle_rush_active', False)):
+            return
+        try:
+            idx = int(result_index)
+        except Exception:
+            return
+        try:
+            results = list(getattr(self, '_puzzle_rush_results', []) or [])
+        except Exception:
+            results = []
+        if idx < 0 or idx >= len(results):
+            return
+        item = results[idx]
+        if not isinstance(item, dict):
+            return
+
+        start_fen = str(item.get('start_fen') or '').strip()
+        uci_line = list(item.get('uci') or [])
+        user_side = str(item.get('user_side') or 'w')
+
+        if not start_fen:
+            return
+
+        # Save current live state so Back restores Puzzle Rush exactly.
+        # Use a stable snapshot (FEN + puzzle state) and rebuild PGN on restore.
+        try:
+            live_fen = str(self._current_fen())
+        except Exception:
+            live_fen = str(self.game_fens[-1]) if getattr(self, 'game_fens', None) else ''
+
+        try:
+            self._puzzle_rush_solution_saved_state = {
+                'live_fen': live_fen,
+                'flipped': bool(getattr(self, 'flipped', False)),
+                'game_fens': list(getattr(self, 'game_fens', []) or []),
+                'last_move': list(getattr(self, 'last_move', []) or []),
+                'game_movelist_visible': bool(getattr(self, 'game_movelist_visible', True)),
+                '_game_browse_active': bool(getattr(self, '_game_browse_active', False)),
+                '_game_browse_index': getattr(self, '_game_browse_index', None),
+                'selected_square': getattr(self, 'selected_square', None),
+                'end_popup_active': bool(getattr(self, 'end_popup_active', False)),
+                'end_popup_text': str(getattr(self, 'end_popup_text', '') or ''),
+                'end_popup_pgn_path': getattr(self, 'end_popup_pgn_path', None),
+                'pending_uci': str(getattr(self, '_puzzle_rush_pending_uci', '') or ''),
+                'pending_due': getattr(self, '_puzzle_rush_pending_due_ts', None),
+                'pending_adv': int(getattr(self, '_puzzle_rush_pending_advance', 0) or 0),
+                'premove_queue': list(getattr(self, '_premove_queue', []) or []),
+                # Puzzle Rush state needed to continue current puzzle
+                'pr_user_side': str(getattr(self, '_puzzle_rush_user_side', 'w') or 'w'),
+                'pr_current_rating': int(getattr(self, '_puzzle_rush_current_rating', 0) or 0),
+                'pr_current_start_fen': str(getattr(self, '_puzzle_rush_current_start_fen', '') or ''),
+                'pr_expected_uci': list(getattr(self, '_puzzle_rush_expected_uci', []) or []),
+                'pr_expected_i': int(getattr(self, '_puzzle_rush_expected_i', 0) or 0),
+                'pr_index': int(getattr(self, '_puzzle_rush_index', 0) or 0),
+                'pr_solved': int(getattr(self, '_puzzle_rush_solved', 0) or 0),
+                'pr_strikes': int(getattr(self, '_puzzle_rush_strikes', 0) or 0),
+            }
+        except Exception:
+            self._puzzle_rush_solution_saved_state = None
+
+        # Enter solution view and pause any pending puzzle actions.
+        self._puzzle_rush_solution_active = True
+        self._puzzle_rush_solution_index = idx
+        self.end_popup_active = False
+        self.end_popup_text = ''
+        self.end_popup_pgn_path = None
+        self._puzzle_rush_pending_uci = ''
+        self._puzzle_rush_pending_due_ts = None
+        self._puzzle_rush_pending_advance = 0
+        try:
+            self._clear_premove()
+        except Exception:
+            pass
+        self.selected_square = None
+
+        # Build solution FENs: start position, then after each move in the line.
+        fens: list[str] = []
+        last_fen = start_fen
+        try:
+            b = chess.Board(self._normalize_fen_6_fields(start_fen))
+            fens.append(b.fen())
+            for uci in uci_line:
+                try:
+                    mv = chess.Move.from_uci(str(uci))
+                    if mv in b.legal_moves:
+                        b.push(mv)
+                        fens.append(b.fen())
+                    else:
+                        break
+                except Exception:
+                    break
+            last_fen = fens[-1] if fens else start_fen
+        except Exception:
+            fens = [start_fen]
+            last_fen = start_fen
+
+        # Orientation: match the user's side for that puzzle.
+        self.flipped = bool(str(user_side).lower().startswith('b'))
+
+        # Ensure the move list panel can be shown in solution view.
+        try:
+            self.game_movelist_visible = True
+        except Exception:
+            pass
+
+        # Store solution line and start at the beginning position by default.
+        try:
+            self._puzzle_rush_solution_fens = list(fens)
+        except Exception:
+            self._puzzle_rush_solution_fens = [str(last_fen)]
+        try:
+            self._puzzle_rush_solution_cursor = 0
+        except Exception:
+            self._puzzle_rush_solution_cursor = 0
+
+        try:
+            self.game_fens = list(self._puzzle_rush_solution_fens)
+        except Exception:
+            self.game_fens = [str(last_fen)]
+        try:
+            # Provide the full solution line so the right-side move list can render it.
+            self.last_move = list(uci_line)
+        except Exception:
+            pass
+        try:
+            self._load_fen_into_ui(str(self.game_fens[self._puzzle_rush_solution_cursor]))
+        except Exception:
+            pass
+
+        # Drive move-list highlighting off the solution cursor (fen index).
+        try:
+            self._game_browse_active = True
+            self._game_browse_index = int(self._puzzle_rush_solution_cursor)
+        except Exception:
+            pass
+        try:
+            self._game_san_cache_n = -1
+            self._game_san_cache = []
+        except Exception:
+            pass
+
+        # Use a fresh PGN container in solution view.
+        try:
+            self.game = chess.pgn.Game()
+            self.node = self.game
+        except Exception:
+            pass
+
+    def _puzzle_rush_solution_set_cursor(self, new_index: int) -> None:
+        try:
+            fens = list(getattr(self, '_puzzle_rush_solution_fens', []) or [])
+        except Exception:
+            fens = []
+        if not fens:
+            return
+        try:
+            i = int(max(0, min(int(new_index), len(fens) - 1)))
+        except Exception:
+            i = 0
+        try:
+            cur = int(getattr(self, '_puzzle_rush_solution_cursor', 0) or 0)
+        except Exception:
+            cur = 0
+        if i == cur:
+            return
+        # Use browse setter so navigation plays move sounds and updates the move list highlight.
+        try:
+            if not getattr(self, '_game_browse_active', False):
+                self._enter_game_browse()
+            self._set_game_browse_index(int(i), play_sound=True)
+        except Exception:
+            # Fallback: load fen without sound.
+            try:
+                self._puzzle_rush_solution_cursor = i
+                self._load_fen_into_ui(str(fens[i]))
+            except Exception:
+                pass
+
+    def _puzzle_rush_close_solution_view(self) -> None:
+        if not bool(getattr(self, '_puzzle_rush_solution_active', False)):
+            return
+        st = getattr(self, '_puzzle_rush_solution_saved_state', None)
+        self._puzzle_rush_solution_active = False
+        self._puzzle_rush_solution_index = None
+        self._puzzle_rush_solution_saved_state = None
+
+        if not isinstance(st, dict):
+            return
+
+        # Restore Puzzle Rush state first.
+        try:
+            self._puzzle_rush_user_side = str(st.get('pr_user_side', 'w') or 'w')
+            self._puzzle_rush_current_rating = int(st.get('pr_current_rating', 0) or 0)
+            self._puzzle_rush_current_start_fen = str(st.get('pr_current_start_fen', '') or '')
+            self._puzzle_rush_expected_uci = list(st.get('pr_expected_uci', []) or [])
+            self._puzzle_rush_expected_i = int(st.get('pr_expected_i', 0) or 0)
+            self._puzzle_rush_index = int(st.get('pr_index', 0) or 0)
+            self._puzzle_rush_solved = int(st.get('pr_solved', 0) or 0)
+            self._puzzle_rush_strikes = int(st.get('pr_strikes', 0) or 0)
+        except Exception:
+            pass
+
+        try:
+            self.flipped = bool(st.get('flipped', False))
+        except Exception:
+            pass
+        try:
+            self.game_fens = list(st.get('game_fens', []) or [])
+        except Exception:
+            pass
+        try:
+            self.last_move = list(st.get('last_move', []) or [])
+        except Exception:
+            pass
+        try:
+            live_fen = str(st.get('live_fen', '') or '')
+            if live_fen:
+                self._load_fen_into_ui(live_fen)
+            elif self.game_fens:
+                self._load_fen_into_ui(str(self.game_fens[-1]))
+        except Exception:
+            pass
+
+        # Rebuild PGN so node.board() remains consistent.
+        try:
+            start_fen = ''
+            if self.game_fens:
+                start_fen = str(self.game_fens[0])
+            if start_fen:
+                self.game = chess.pgn.Game()
+                try:
+                    self.game.headers['SetUp'] = '1'
+                    self.game.headers['FEN'] = self._normalize_fen_6_fields(start_fen)
+                except Exception:
+                    pass
+                node = self.game
+                for u in list(self.last_move or []):
+                    try:
+                        node = node.add_variation(chess.Move.from_uci(str(u)))
+                    except Exception:
+                        break
+                self.node = node
+        except Exception:
+            pass
+        try:
+            self.selected_square = st.get('selected_square', None)
+        except Exception:
+            self.selected_square = None
+        try:
+            self.game_movelist_visible = bool(st.get('game_movelist_visible', True))
+        except Exception:
+            pass
+        try:
+            self._game_browse_active = bool(st.get('_game_browse_active', False))
+            self._game_browse_index = st.get('_game_browse_index', None)
+        except Exception:
+            pass
+        try:
+            self.end_popup_active = bool(st.get('end_popup_active', False))
+            self.end_popup_text = str(st.get('end_popup_text', '') or '')
+            self.end_popup_pgn_path = st.get('end_popup_pgn_path', None)
+        except Exception:
+            pass
+        try:
+            self._puzzle_rush_pending_uci = str(st.get('pending_uci', '') or '')
+            self._puzzle_rush_pending_due_ts = st.get('pending_due', None)
+            self._puzzle_rush_pending_advance = int(st.get('pending_adv', 0) or 0)
+        except Exception:
+            pass
+        try:
+            self._premove_queue = list(st.get('premove_queue', []) or [])
+            self._rebuild_premove_visuals()
+        except Exception:
+            pass
+
+        # Clear solution buffers.
+        self._puzzle_rush_solution_fens = []
+        self._puzzle_rush_solution_cursor = 0
 
     def _puzzle_rush_expected_uci_from_entry(self, entry: dict) -> tuple[str, list[str]]:
         """Return (start_fen, uci_line) for the puzzle, best-effort."""
@@ -13363,6 +13888,13 @@ class Engine:
         self._puzzle_rush_pending_due_ts = None
         self._puzzle_rush_pending_advance = 0
 
+        self._puzzle_rush_current_start_fen = ''
+        self._puzzle_rush_solution_active = False
+        self._puzzle_rush_solution_saved_state = None
+        self._puzzle_rush_solution_index = None
+        self._puzzle_rush_solution_back_rect = None
+        self._puzzle_rush_result_hitboxes = []
+
         # Ensure no hint visuals leak into Puzzle Rush.
         self.best_move = ''
         self.hint_arrow = None
@@ -13418,6 +13950,7 @@ class Engine:
 
         start_fen, uci_line = self._puzzle_rush_expected_uci_from_entry(entry)
         start_fen = self._normalize_fen_6_fields(start_fen)
+        self._puzzle_rush_current_start_fen = str(start_fen)
         self._puzzle_rush_expected_uci = list(uci_line or [])
         self._puzzle_rush_expected_i = 0
         self._puzzle_rush_pending_uci = ''
@@ -13533,7 +14066,7 @@ class Engine:
                     self._puzzle_rush_play_result_sound(True)
                 except Exception:
                     pass
-                self._puzzle_rush_results.append((int(getattr(self, '_puzzle_rush_current_rating', 0) or 0), True))
+                self._puzzle_rush_record_result(True)
                 self._puzzle_rush_solved += 1
                 self._puzzle_rush_index += 1
                 self._puzzle_rush_load_puzzle(self._puzzle_rush_index)
@@ -13583,7 +14116,7 @@ class Engine:
         if i < 0 or i >= len(self._puzzle_rush_expected_uci):
             # Already at end.
             try:
-                self._puzzle_rush_results.append((int(getattr(self, '_puzzle_rush_current_rating', 0) or 0), True))
+                self._puzzle_rush_record_result(True)
             except Exception:
                 pass
             self._puzzle_rush_solved += 1
@@ -13601,7 +14134,7 @@ class Engine:
             except Exception:
                 pass
             try:
-                self._puzzle_rush_results.append((int(getattr(self, '_puzzle_rush_current_rating', 0) or 0), False))
+                self._puzzle_rush_record_result(False)
             except Exception:
                 pass
             if self._puzzle_rush_strikes >= 3:
@@ -13627,7 +14160,7 @@ class Engine:
             except Exception:
                 pass
             try:
-                self._puzzle_rush_results.append((int(getattr(self, '_puzzle_rush_current_rating', 0) or 0), True))
+                self._puzzle_rush_record_result(True)
             except Exception:
                 pass
             self._puzzle_rush_solved += 1
