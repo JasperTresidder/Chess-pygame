@@ -1,7 +1,7 @@
 <h3>This is a pygame implementation of chess. It follows chess rules, supports Player vs Player / Player vs AI / AI vs AI, and includes an in-game Game Review system for saved PGNs.</h3>
 
 <h5>Requires Python >=3.10 <br>
-Size: 166Mb</h5>
+Size (Chess.zip): 137Mb</h5>
 
 ### Tips:
 - You may have to <a href="https://stockfishchess.org/download/">install</a> your own version of Stockfish.<br>
@@ -11,9 +11,19 @@ Size: 166Mb</h5>
 ## Features
 - <b>Rules + legality</b>: move legality is generated via <code>python-chess</code>.
 - <b>Move input modes</b>: Click-to-move, Drag-to-move, or Click+Drag (configurable in Settings).
+- <b>Premove</b>: queue premoves while waiting for the opponent/engine; supports multiple queued premoves.
 - <b>Hint</b>: <code>Ctrl+H</code> draws a blue hint arrow.
 - <b>Eval bar</b>: asynchronous evaluation bar with show/hide toggle; shows the number on hover.
 - <b>AI strength</b>: Elo-based strength limiting (more beginner-friendly at low Elo).
+- <b>Puzzle Rush</b>:
+	- Loads puzzle packs from <code>data/puzzle-rush/*.json</code> and plays puzzles easiest → hardest.
+	- Always starts with the computer move (dataset is expected to be “engine-to-move first”).
+	- Board flips automatically if you are playing as Black for that puzzle.
+	- Run ends after <b>3 strikes</b>; score and highscore are tracked.
+	- Uses non-blocking delayed computer replies (smooth UI), with fast replies when you premove.
+	- <b>Hint/Eval</b> are disabled in Puzzle Rush.
+	- Attempt history is clickable: click a ✓/✗ to open a read-only solution review.
+	- Solution review shows a move list on the right; click moves (or use Left/Right) to jump through positions.
 - <b>Game Review</b>:
 	- Browse saved PGNs from Settings (dropdown shows timestamp + AI Elo).
 	- Step through moves with Left/Right, jump by clicking moves, scroll with mouse wheel.
@@ -25,6 +35,12 @@ Size: 166Mb</h5>
 - <b>ESC</b>: open Settings (or exit Game Review when reviewing)
 - <b>Left/Right</b>: step through moves in Game Review
 - <b>Ctrl+H</b>: hint arrow
+
+<b>Puzzle Rush</b>
+- Click a ✓/✗ result marker: open solution review for that puzzle
+- <b>Back</b> (button) or <b>ESC</b>: return to the live Puzzle Rush run
+- Click moves in the right-side move list: jump to that position (with move sounds)
+- <b>Left/Right</b>: step through the solution line
 
 
 ## Setup
@@ -52,9 +68,9 @@ MacOS/Unix:</h4>
 ### Notes
 - Saved games are written to <code>data/games/*.pgn</code>.
 - Stockfish is loaded from <code>lit/stockfish/&lt;platform&gt;/</code>.
-![image](https://github.com/JasperTresidder/Chess-pygame/assets/51917264/b01feef1-62ac-49de-9bff-b3eea429fd1f)
-![image](https://github.com/JasperTresidder/Chess-pygame/assets/51917264/348d3928-b7d3-4dab-9e20-09cacebfde73)
-![image](https://github.com/JasperTresidder/Chess-pygame/assets/51917264/8e7ea6f8-6f18-4259-afa7-c802e682975b)
-![image](https://github.com/JasperTresidder/Chess-pygame/assets/51917264/0259b5f8-c75a-4eda-8815-89f93b4d6c47)
+- Puzzle Rush packs live in <code>data/puzzle-rush/</code>.
+- Puzzle Rush pack progression is persisted in <code>data/settings/puzzle_rush_last_pack.txt</code>.
+- Puzzle Rush highscore is persisted in <code>data/settings/puzzle_rush_highscore.txt</code>.
+
 
 
