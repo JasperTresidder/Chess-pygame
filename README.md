@@ -1,5 +1,5 @@
 <h3>This is a pygame implementation of chess. It follows chess rules, supports Player vs Player / Player vs AI / AI vs AI, and includes an in-game Game Review system for saved PGNs.</h3>
-
+<img width="1768" height="992" alt="Screenshot 2025-12-22 201737" src="https://github.com/user-attachments/assets/3f39849f-2853-4ed7-83cc-388e4d29ebbc" />
 <h5>Requires Python >=3.10 <br>
 Size (Chess.zip): 137Mb</h5>
 
@@ -72,5 +72,8 @@ MacOS/Unix:</h4>
 - Puzzle Rush pack progression is persisted in <code>data/settings/puzzle_rush_last_pack.txt</code>.
 - Puzzle Rush highscore is persisted in <code>data/settings/puzzle_rush_highscore.txt</code>.
 
+<img width="1771" height="989" alt="Screenshot 2025-12-22 201820" src="https://github.com/user-attachments/assets/f5b0b3fb-8f5f-416a-a902-d19fc5437345" />
+<img width="1767" height="990" alt="Screenshot 2025-12-22 201857" src="https://github.com/user-attachments/assets/f46a0c1b-b38b-45c3-99f1-69f813ca0405" />
+<img width="1917" height="1011" alt="image" src="https://github.com/user-attachments/assets/72017aa9-527f-43e8-b4d9-927f3da3d20e" />
 
 
